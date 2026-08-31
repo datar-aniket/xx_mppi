@@ -1,13 +1,19 @@
-# Replace with characterized xxCar values before real-vehicle use.
+# Traxxas TRX-4 Sport, standard 312 mm chassis and stock 4.6 inch tires.
+#
+# mass_kg is the user's approximate ready-to-run value. Wheelbase and tire
+# radius come from the stock geometry. The remaining dynamics values are safe
+# initial identification estimates, not manufacturer specifications: measure
+# axle weights/CG and fit yaw inertia, cornering stiffness, friction and the
+# locked-drivetrain equivalent inertia from logged tests before high-speed use.
 vehicle:
-  mass_kg: 20.0
-  yaw_inertia_kgm2: 1.0
-  cg_to_front_m: 0.18
-  cg_to_rear_m: 0.18
-  front_cornering_stiffness_nprad: 1200.0
-  rear_cornering_stiffness_nprad: 1400.0
+  mass_kg: 2.0
+  yaw_inertia_kgm2: 0.040
+  cg_to_front_m: 0.156
+  cg_to_rear_m: 0.156
+  front_cornering_stiffness_nprad: 75.0
+  rear_cornering_stiffness_nprad: 75.0
   front_friction_coefficient: 1.0
   rear_friction_coefficient: 1.0
-  wheel_radius_m: 0.05
+  wheel_radius_m: 0.05842
   driven_wheel_inertia_kgm2: 0.01
-  front_brake_bias: 0.0
+  front_brake_bias: 0.5

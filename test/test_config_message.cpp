@@ -20,6 +20,17 @@ TEST(Config, LoadsOrinProblemAndPhysicalControlBounds) {
   EXPECT_FLOAT_EQ(config.mppi.control_max[kWheelTorque], 5.0F);
 }
 
+TEST(Config, LoadsTrx4SportVehicleProfile) {
+  const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
+  EXPECT_FLOAT_EQ(config.vehicle.mass_kg, 2.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.yaw_inertia_kgm2, 0.040F);
+  EXPECT_FLOAT_EQ(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m, 0.312F);
+  EXPECT_FLOAT_EQ(config.vehicle.front_cornering_stiffness_nprad, 75.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.rear_cornering_stiffness_nprad, 75.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.wheel_radius_m, 0.05842F);
+  EXPECT_FLOAT_EQ(config.vehicle.front_brake_bias, 0.5F);
+}
+
 TEST(RosMessage, PreservesTimestampAndTTAlignment) {
   PlannedTrajectory trajectory;
   trajectory.solution_pose_time_ns = 2'000'000'123LL;
