@@ -45,6 +45,7 @@ void LoadVehicle(const YAML::Node & root, VehicleParameters & output) {
   output.driven_wheel_inertia_kgm2 = GetOr(
     vehicle, "driven_wheel_inertia_kgm2", output.driven_wheel_inertia_kgm2);
   output.front_brake_bias = GetOr(vehicle, "front_brake_bias", output.front_brake_bias);
+  output.locked_awd = GetOr(vehicle, "locked_awd", output.locked_awd);
 }
 
 void LoadNamedStateWeights(const YAML::Node & node, CostWeights & weights) {

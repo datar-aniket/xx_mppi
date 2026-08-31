@@ -70,6 +70,7 @@ struct VehicleParameters {
   float wheel_radius_m{0.05F};
   float driven_wheel_inertia_kgm2{0.01F};
   float front_brake_bias{0.0F};
+  bool locked_awd{false};
 };
 
 struct AdaptationConfig {

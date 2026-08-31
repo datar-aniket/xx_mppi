@@ -29,6 +29,7 @@ TEST(Config, LoadsTrx4SportVehicleProfile) {
   EXPECT_FLOAT_EQ(config.vehicle.rear_cornering_stiffness_nprad, 75.0F);
   EXPECT_FLOAT_EQ(config.vehicle.wheel_radius_m, 0.05842F);
   EXPECT_FLOAT_EQ(config.vehicle.front_brake_bias, 0.5F);
+  EXPECT_TRUE(config.vehicle.locked_awd);
 }
 
 TEST(RosMessage, PreservesTimestampAndTTAlignment) {

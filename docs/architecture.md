@@ -11,7 +11,8 @@ The internal Frenet state is float32 and ordered as:
 1. yaw rate `r` [rad/s]
 2. speed `V` [m/s]
 3. sideslip `beta` [rad]
-4. driven-wheel peripheral speed [m/s]
+4. driven-wheel peripheral speed [m/s]; for `locked_awd`, this is the common
+   effective peripheral speed of the rigidly coupled four-wheel driveline
 5. lateral deviation `e` [m], positive left of the raceline
 6. relative course heading `dphi` [rad]
 7. continuous path evolution `s` [m]
@@ -19,6 +20,12 @@ The internal Frenet state is float32 and ordered as:
 Controls are `[steering_angle_rad, wheel_torque_nm]`. Default bounds are
 `[-0.5, 0.5] rad` and the provisional `[-5, 5] Nm`; both are runtime YAML
 parameters.
+
+The TRX-4 profile enables `locked_awd`. Its Fiala model evaluates combined
+longitudinal/lateral slip at both axles using the common wheel-speed state and
+feeds both axle-force reactions into the equivalent driveline inertia. The
+torque control is therefore total wheel-side driveline torque, not per-wheel
+torque.
 
 Every vehicle-state update is projected onto the static raceline. The projector
 uses the previous unwrapped `s` as a local hint and unwraps the new result near

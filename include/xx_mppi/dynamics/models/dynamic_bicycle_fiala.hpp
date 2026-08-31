@@ -51,10 +51,23 @@ class DynamicBicycleFiala {
       atan2f(lateral_speed + a * yaw_rate, longitudinal_speed) - steering;
     const float rear_slip_angle =
       atan2f(lateral_speed - b * yaw_rate, longitudinal_speed);
-    const float slip_denominator = longitudinal_speed >= 0.0F ?
+    const float rear_slip_denominator = longitudinal_speed >= 0.0F ?
       fmaxf(longitudinal_speed, minimum_longitudinal_speed) :
       fminf(longitudinal_speed, -minimum_longitudinal_speed);
-    const float rear_slip_ratio = (wheel_speed - longitudinal_speed) / slip_denominator;
+    const float rear_slip_ratio =
+      (wheel_speed - longitudinal_speed) / rear_slip_denominator;
+
+    // A locked TRX-4 driveline constrains all wheels to one effective angular
+    // speed. Resolve the front contact-patch velocity into the steered wheel
+    // frame before forming its longitudinal slip ratio.
+    const float front_lateral_speed = lateral_speed + a * yaw_rate;
+    const float front_longitudinal_speed =
+      cos_delta * longitudinal_speed + sin_delta * front_lateral_speed;
+    const float front_slip_denominator = front_longitudinal_speed >= 0.0F ?
+      fmaxf(front_longitudinal_speed, minimum_longitudinal_speed) :
+      fminf(front_longitudinal_speed, -minimum_longitudinal_speed);
+    const float front_slip_ratio =
+      (wheel_speed - front_longitudinal_speed) / front_slip_denominator;
 
     // The xxCar command is physical driven-wheel torque. Negative torque can
     // optionally be split toward the front using front_brake_bias; the default
@@ -67,9 +80,16 @@ class DynamicBicycleFiala {
     const float requested_front_force =
       front_brake_torque / fmaxf(parameters_.wheel_radius_m, 1.0e-6F) * low_speed_fade;
 
-    const auto front = FialaSimpleCoupling(
-      front_slip_angle, parameters_.front_cornering_stiffness_nprad,
-      parameters_.front_friction_coefficient, front_load, requested_front_force);
+    TireForces front;
+    if (parameters_.locked_awd) {
+      front = FialaCombinedSlip(
+        front_slip_angle, front_slip_ratio, parameters_.front_cornering_stiffness_nprad,
+        parameters_.front_friction_coefficient, front_load);
+    } else {
+      front = FialaSimpleCoupling(
+        front_slip_angle, parameters_.front_cornering_stiffness_nprad,
+        parameters_.front_friction_coefficient, front_load, requested_front_force);
+    }
     const auto rear = FialaCombinedSlip(
       rear_slip_angle, rear_slip_ratio, parameters_.rear_cornering_stiffness_nprad,
       parameters_.rear_friction_coefficient, rear_load);
@@ -85,8 +105,11 @@ class DynamicBicycleFiala {
       (sin_delta_minus_beta * front.longitudinal_n +
       cos_delta_minus_beta * front.lateral_n - sin_beta * rear.longitudinal_n +
       cos_beta * rear.lateral_n) / (mass * speed);
+    const float tire_reaction_force = rear.longitudinal_n +
+      (parameters_.locked_awd ? front.longitudinal_n : 0.0F);
+    const float applied_driveline_torque = parameters_.locked_awd ? torque : rear_torque;
     const float wheel_speed_rate = parameters_.wheel_radius_m *
-      (rear_torque - parameters_.wheel_radius_m * rear.longitudinal_n) /
+      (applied_driveline_torque - parameters_.wheel_radius_m * tire_reaction_force) /
       fmaxf(parameters_.driven_wheel_inertia_kgm2, 1.0e-6F);
     return BodyDerivative{
       yaw_acceleration, speed_acceleration, sideslip_rate, wheel_speed_rate};

@@ -15,5 +15,9 @@ vehicle:
   front_friction_coefficient: 1.0
   rear_friction_coefficient: 1.0
   wheel_radius_m: 0.05842
+  # Equivalent inertia seen at the tire for the rigidly coupled driveline.
   driven_wheel_inertia_kgm2: 0.01
+  # Used by non-AWD profiles; locked AWD routes regenerative torque through
+  # the shared driveline model instead.
   front_brake_bias: 0.5
+  locked_awd: true

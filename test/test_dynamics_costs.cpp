@@ -44,6 +44,24 @@ TEST(Dynamics, FialaRolloutRemainsFinite) {
   }
 }
 
+TEST(Dynamics, LockedAwdUsesBothAxlesForLongitudinalSlip) {
+  auto rear_drive_parameters = TestVehicle();
+  rear_drive_parameters.locked_awd = false;
+  auto awd_parameters = rear_drive_parameters;
+  awd_parameters.locked_awd = true;
+
+  const BodyState slipping{{0.0F, 3.0F, 0.0F, 4.0F}};
+  const Control coasting{{0.0F, 0.0F}};
+  const auto rear_drive = DynamicBicycleFiala(rear_drive_parameters).Derivative(
+    slipping, coasting);
+  const auto locked_awd = DynamicBicycleFiala(awd_parameters).Derivative(
+    slipping, coasting);
+
+  EXPECT_GT(rear_drive[kSpeed], 0.0F);
+  EXPECT_GT(locked_awd[kSpeed], 1.8F * rear_drive[kSpeed]);
+  EXPECT_LT(locked_awd[kDrivenWheelSpeed], rear_drive[kDrivenWheelSpeed]);
+}
+
 TEST(Costs, CrashedRolloutCostsMoreThanInBoundsRollout) {
   const auto raceline = Raceline::LoadCsv(TestCsv());
   const auto reference = raceline.Sample(0.0F, 5U, 0.1F);
