@@ -1,0 +1,13 @@
+# Replace with characterized xxCar values before real-vehicle use.
+vehicle:
+  mass_kg: 20.0
+  yaw_inertia_kgm2: 1.0
+  cg_to_front_m: 0.18
+  cg_to_rear_m: 0.18
+  front_cornering_stiffness_nprad: 1200.0
+  rear_cornering_stiffness_nprad: 1400.0
+  front_friction_coefficient: 1.0
+  rear_friction_coefficient: 1.0
+  wheel_radius_m: 0.05
+  driven_wheel_inertia_kgm2: 0.01
+  front_brake_bias: 0.0

@@ -1,0 +1,79 @@
+# ROS 2 / colcon workspace outputs
+/build/
+/install/
+/log/
+/build_isolated/
+/install_isolated/
+/devel/
+/devel_isolated/
+.colcon/
+.ros/
+
+# CMake in-source and IDE build outputs
+/CMakeCache.txt
+/CMakeFiles/
+/CTestTestfile.cmake
+/Makefile
+/Testing/
+/cmake_install.cmake
+/compile_commands.json
+cmake-build-*/
+_deps/
+
+# C/C++ and CUDA build artifacts
+*.a
+*.d
+*.dll
+*.dylib
+*.exe
+*.fatbin
+*.gcda
+*.gcno
+*.la
+*.lib
+*.lo
+*.o
+*.obj
+*.ptx
+*.so
+*.so.*
+
+# Generated ML / TensorRT artifacts
+*.engine
+*.onnx
+*.plan
+*.pt
+*.pth
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Coverage and profiling output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+lcov.info
+*.profraw
+*.profdata
+
+# Editor and OS metadata
+.idea/
+.vscode/
+*.swo
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Runtime logs and temporary files
+*.log
+*.tmp
+*.bak

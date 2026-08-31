@@ -1,0 +1,5 @@
+name: dynamic_bicycle_fiala  # kinematic_bicycle | tensorrt_neural_derivative
+raceline_path: raceline.csv
+vehicle_params_path: vehicle.yaml
+neural_model_path: model.plan
+projection_window_m: 30.0

@@ -1,0 +1,40 @@
+# Jetson Orin NX target. K/T/dt are compile-independent runtime dimensions;
+# changing them reallocates persistent CUDA buffers but does not alter messages.
+num_samples: 2001
+horizon: 50
+dt: 0.1
+solve_rate_hz: 100.0
+integrator: euler
+integration_substeps: 2
+lambda: 2.0
+seed: 0
+
+sigma:
+  steering_angle_rad: 0.10
+  wheel_torque_nm: 1.0
+
+# Provisional torque bounds pending final vehicle characterization.
+control_bounds:
+  min: {steering_angle_rad: -0.5, wheel_torque_nm: -5.0}
+  max: {steering_angle_rad:  0.5, wheel_torque_nm:  5.0}
+
+noise_smoothing_window: 5
+control_delay_steps: 0
+control_cost_gamma: 0.8
+special_samples: true
+use_reference_controls: true
+expected_trajectory: true
+
+adaptation:
+  adaptive_lambda: true
+  ess_fraction_min: 0.002
+  ess_fraction_max: 0.02
+  lambda_min: 0.05
+  lambda_max: 10000.0
+  adaptive_sigma: true
+  sigma_alpha: 0.1
+  sigma_scale_min: 0.5
+  sigma_scale_max: 2.0
+  speed_scaled_steering: true
+  steering_reference_speed_mps: 4.0
+  steering_minimum_scale: 0.2
