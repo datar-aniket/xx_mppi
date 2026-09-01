@@ -57,7 +57,13 @@ void MppiRosRuntime::TimerCallback() {
       return;
     }
   }
-  publisher_->publish(ToRosMessage(trajectory, node_.get_clock()->now()));
+  try {
+    publisher_->publish(ToRosMessage(trajectory, node_.get_clock()->now()));
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR_THROTTLE(
+      node_.get_logger(), *node_.get_clock(), 1000,
+      "MPPI trajectory publication failed: %s", error.what());
+  }
 }
 
 }  // namespace xxcar::mppi

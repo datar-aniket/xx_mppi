@@ -16,11 +16,19 @@ The ROS output is `xxcar_msgs/msg/VehicleControlTrajectory` on
 states and `T` controls; internal terminal state `x[T]` is deliberately omitted.
 No UART packets are emitted.
 
+The runnable ROS node subscribes to `ekf_mcu_driver/msg/EkfState` on
+`ekf/state`, validates estimator/VESC status and sample freshness, projects each
+accepted ENU pose into continuous Frenet coordinates, and resets its warm start
+when the EKF reset counter changes:
+
+```bash
+ros2 launch xx_mppi mppi.launch.py config_directory:=/absolute/path/to/config
+```
+
 See:
 
 - `docs/architecture.md` for state ordering, frames, and controller flow.
 - `docs/map_contract.md` for the EPIC-compatible static CSV format.
 - `docs/model_pipeline.md` for PyTorch-to-TensorRT conversion.
-- `docs/ros_integration.md` for the remaining vehicle-state message adapter.
+- `docs/ros_integration.md` for state validity, parameters, and vehicle startup.
 - `docs/orin_deployment.md` for the JetPack build and benchmark procedure.
-

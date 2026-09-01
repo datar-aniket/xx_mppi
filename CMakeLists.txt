@@ -13,6 +13,8 @@ set(XX_MPPI_CUDA_ARCHITECTURES "87" CACHE STRING
   "CUDA architectures; 87 is the Jetson Orin GPU")
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(ekf_mcu_driver REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(xxcar_msgs REQUIRED)
@@ -34,14 +36,22 @@ target_compile_options(xx_mppi_core PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Wconversion>)
 
 add_library(xx_mppi_ros SHARED
+  src/ros/ekf_state_adapter.cpp
+  src/ros/mppi_node.cpp
   src/ros/runtime.cpp
   src/ros/trajectory_message.cpp)
 target_include_directories(xx_mppi_ros PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(xx_mppi_ros xx_mppi_core)
-ament_target_dependencies(xx_mppi_ros rclcpp xxcar_msgs)
+ament_target_dependencies(
+  xx_mppi_ros ament_index_cpp ekf_mcu_driver rclcpp xxcar_msgs)
 target_compile_options(xx_mppi_ros PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+
+add_executable(xx_mppi_node src/ros/main.cpp)
+target_link_libraries(xx_mppi_node xx_mppi_ros)
+ament_target_dependencies(xx_mppi_node rclcpp)
+target_compile_options(xx_mppi_node PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 
 set(XX_MPPI_HAS_CUDA OFF)
 if(XX_MPPI_ENABLE_CUDA)
@@ -106,10 +116,10 @@ endif()
 
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch docs DESTINATION share/${PROJECT_NAME})
-install(TARGETS xx_mppi_core xx_mppi_ros
+install(TARGETS xx_mppi_core xx_mppi_ros xx_mppi_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 if(XX_MPPI_HAS_CUDA)
   install(TARGETS xxcar_benchmark_mppi RUNTIME DESTINATION lib/${PROJECT_NAME})
@@ -117,7 +127,10 @@ endif()
 if(XX_MPPI_HAS_TENSORRT)
   install(TARGETS xxcar_build_trt_engine RUNTIME DESTINATION lib/${PROJECT_NAME})
 endif()
-install(PROGRAMS tools/export_pytorch_dynamics.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS
+  tools/export_pytorch_dynamics.py
+  tools/smoke_test_ros_pipeline.py
+  DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -135,9 +148,15 @@ if(BUILD_TESTING)
   target_link_libraries(test_config_message xx_mppi_ros)
   target_compile_definitions(test_config_message PRIVATE
     XX_MPPI_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+
+  ament_add_gtest(test_ekf_state_adapter test/test_ekf_state_adapter.cpp)
+  target_link_libraries(test_ekf_state_adapter xx_mppi_ros)
+  target_compile_definitions(test_ekf_state_adapter PRIVATE
+    XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
 endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(xx_mppi_core xx_mppi_ros)
-ament_export_dependencies(rclcpp xxcar_msgs yaml-cpp)
+ament_export_dependencies(
+  ament_index_cpp ekf_mcu_driver rclcpp xxcar_msgs yaml-cpp)
 ament_package()
