@@ -1,12 +1,15 @@
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    default_config = get_package_share_directory("xx_mppi") + "/config"
+    # Resolve through the ament index so this works for both normal and
+    # --symlink-install workspaces. Paths inside model.yaml are subsequently
+    # resolved relative to this directory by the controller config loader.
+    default_config = PathJoinSubstitution([FindPackageShare("xx_mppi"), "config"])
     arguments = [
         DeclareLaunchArgument("config_directory", default_value=default_config),
         DeclareLaunchArgument("state_topic", default_value="ekf/state"),

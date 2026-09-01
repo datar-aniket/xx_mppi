@@ -9,11 +9,27 @@ On the JetPack 6.2.2 / Ubuntu 22.04 / ROS 2 Humble target:
 cd /path/to/nav_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-up-to xx_mppi \
+  --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
   -DXX_MPPI_ENABLE_CUDA=ON \
   -DXX_MPPI_ENABLE_TENSORRT=ON \
   -DXX_MPPI_CUDA_ARCHITECTURES=87
 ```
+
+Source `install/setup.bash` after building. The normal launch command needs no
+configuration path because it finds `share/xx_mppi/config` through the ament
+index. With `--symlink-install`, edits to files in `src/xx_mppi/config` are
+visible through that installed path without rebuilding:
+
+```bash
+source install/setup.bash
+ros2 launch xx_mppi mppi.launch.py
+```
+
+Relative asset paths in `config/model.yaml` (for example `raceline.csv`,
+`vehicle.yaml`, and `model.plan`) are resolved relative to the same config
+directory. An external configuration remains available with
+`config_directory:=/absolute/path/to/config`.
 
 TensorRT is optional at configure time so CPU/CUDA analytic development remains
 possible before a neural model exists. Selecting neural dynamics at runtime

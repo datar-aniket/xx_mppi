@@ -45,8 +45,15 @@ configuration directory, then start the EKF driver and MPPI node:
 
 ```bash
 ros2 launch ekf_mcu_driver ekf_mcu_driver.launch.py enable_send_control:=false
-ros2 launch xx_mppi mppi.launch.py config_directory:=/absolute/path/to/config
+ros2 launch xx_mppi mppi.launch.py
 ```
+
+The default configuration is resolved as `share/xx_mppi/config` using the
+ament package index. With a symlink install this points back to the package's
+source configuration, so no absolute path is required and configuration-only
+edits do not require rebuilding. Paths named inside `model.yaml` are resolved
+relative to this directory. Pass an absolute `config_directory` only to use an
+external configuration set.
 
 Verify the safety gate and output before enabling the downstream actuator
 controller:

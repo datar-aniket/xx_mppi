@@ -22,8 +22,22 @@ accepted ENU pose into continuous Frenet coordinates, and resets its warm start
 when the EKF reset counter changes:
 
 ```bash
-ros2 launch xx_mppi mppi.launch.py config_directory:=/absolute/path/to/config
+cd /home/aniket/Documents/nav_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-up-to xx_mppi \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DXX_MPPI_ENABLE_CUDA=ON \
+  -DXX_MPPI_ENABLE_TENSORRT=ON \
+  -DXX_MPPI_CUDA_ARCHITECTURES=87
+source install/setup.bash
+ros2 launch xx_mppi mppi.launch.py
 ```
+
+The launch file finds the installed package share through the ament index and
+uses its `config` directory by default. Consequently, `model.yaml` may keep
+`raceline.csv`, `vehicle.yaml`, and `model.plan` as relative paths; they resolve
+against that directory. Use `config_directory:=/absolute/alternate/config`
+only when intentionally loading a configuration outside this package.
 
 See:
 
