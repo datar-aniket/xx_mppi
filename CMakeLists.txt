@@ -103,7 +103,7 @@ if(XX_MPPI_ENABLE_TENSORRT)
     add_executable(xxcar_build_trt_engine tools/build_tensorrt_engine.cpp)
     target_include_directories(xxcar_build_trt_engine PRIVATE ${TENSORRT_INCLUDE_DIR})
     target_link_libraries(xxcar_build_trt_engine PRIVATE
-      ${TENSORRT_NVINFER} ${TENSORRT_NVONNXPARSER})
+      CUDA::cudart ${TENSORRT_NVINFER} ${TENSORRT_NVONNXPARSER})
     target_compile_options(xxcar_build_trt_engine PRIVATE
       -Wall -Wextra -Wpedantic -Wconversion)
   else()
