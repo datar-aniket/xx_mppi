@@ -29,7 +29,7 @@ visualization after a solve. Enable it with `publish_visualization:=true`; set
 `visualization_rate_hz` and `num_rollouts` in `config/mppi.yaml`. All ROS topics
 use best-effort reliability; RViz displays must also select Best Effort.
 
-The runnable ROS node subscribes to `ekf_mcu_driver/msg/EkfState` on
+The runnable ROS node subscribes to `xxcar_msgs/msg/EkfState` on
 `ekf/state`, validates estimator/VESC status and sample freshness, projects each
 accepted ENU pose into continuous Frenet coordinates, and resets its warm start
 when the EKF reset counter changes:

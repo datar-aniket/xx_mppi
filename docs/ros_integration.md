@@ -1,6 +1,6 @@
 # ROS 2 integration
 
-`xx_mppi_node` subscribes to `ekf_mcu_driver/msg/EkfState` on `ekf/state`. By
+`xx_mppi_node` subscribes to `xxcar_msgs/msg/EkfState` on `ekf/state`. By
 default it publishes `xxcar_msgs/msg/VehicleControlTrajectory` on
 `vehicle_control_trajectory`. An opt-in direct mode instead publishes
 `geometry_msgs/msg/Twist` on `cmd_vel`, using the same field contract as

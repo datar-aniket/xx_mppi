@@ -4,7 +4,7 @@
 import math
 
 import rclpy
-from ekf_mcu_driver.msg import EkfState
+from xxcar_msgs.msg import EkfState
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 

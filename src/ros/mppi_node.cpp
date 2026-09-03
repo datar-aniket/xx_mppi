@@ -101,7 +101,7 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
     *this, config_directory, trajectory_topic, direct_control, std::move(visualization));
   const auto qos = rclcpp::QoS(rclcpp::KeepLast(
       static_cast<std::size_t>(state_qos_depth))).best_effort().durability_volatile();
-  state_subscription_ = create_subscription<ekf_mcu_driver::msg::EkfState>(
+  state_subscription_ = create_subscription<xxcar_msgs::msg::EkfState>(
     state_topic, qos,
     std::bind(&MppiNode::StateCallback, this, std::placeholders::_1));
 
@@ -124,7 +124,7 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
 }
 
 void MppiNode::StateCallback(
-  const ekf_mcu_driver::msg::EkfState::ConstSharedPtr message)
+  const xxcar_msgs::msg::EkfState::ConstSharedPtr message)
 {
   try {
     const auto observation = ToVehicleObservation(*message, adapter_config_);

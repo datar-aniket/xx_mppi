@@ -9,7 +9,7 @@
 namespace xxcar::mppi {
 namespace {
 
-using EkfState = ekf_mcu_driver::msg::EkfState;
+using EkfState = xxcar_msgs::msg::EkfState;
 
 void RequireBits(
   const std::uint8_t value, const std::uint8_t required, const char * label)

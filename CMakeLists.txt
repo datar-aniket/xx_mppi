@@ -14,14 +14,13 @@ set(XX_MPPI_CUDA_ARCHITECTURES "87" CACHE STRING
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
-find_package(ekf_mcu_driver REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
-find_package(xxCar_msgs REQUIRED)
+find_package(xxcar_msgs REQUIRED)
 
 add_library(xx_mppi_core SHARED
   src/controller/builder.cpp
@@ -52,8 +51,8 @@ target_include_directories(xx_mppi_ros PUBLIC
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(xx_mppi_ros xx_mppi_core)
 ament_target_dependencies(
-  xx_mppi_ros ament_index_cpp ekf_mcu_driver geometry_msgs nav_msgs rclcpp
-  std_msgs visualization_msgs xxCar_msgs)
+  xx_mppi_ros ament_index_cpp geometry_msgs nav_msgs rclcpp
+  std_msgs visualization_msgs xxcar_msgs)
 target_compile_options(xx_mppi_ros PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 
 add_executable(xx_mppi_node src/ros/main.cpp)
@@ -179,6 +178,6 @@ endif()
 ament_export_include_directories(include)
 ament_export_libraries(xx_mppi_core xx_mppi_ros)
 ament_export_dependencies(
-  ament_index_cpp ekf_mcu_driver geometry_msgs nav_msgs rclcpp std_msgs
-  visualization_msgs xxCar_msgs yaml-cpp)
+  ament_index_cpp geometry_msgs nav_msgs rclcpp std_msgs
+  visualization_msgs xxcar_msgs yaml-cpp)
 ament_package()

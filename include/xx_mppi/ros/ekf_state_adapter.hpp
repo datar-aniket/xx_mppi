@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <optional>
 
-#include <ekf_mcu_driver/msg/ekf_state.hpp>
+#include <xxcar_msgs/msg/ekf_state.hpp>
 
 #include "xx_mppi/controller/mppi_controller.hpp"
 
@@ -24,7 +24,7 @@ void ValidateEkfStateAdapterConfig(const EkfStateAdapterConfig & config);
 // Converts the MCU state contract into the ROS-independent controller input.
 // Throws std::invalid_argument when a required validity bit or value is bad.
 [[nodiscard]] VehicleObservation ToVehicleObservation(
-  const ekf_mcu_driver::msg::EkfState & message,
+  const xxcar_msgs::msg::EkfState & message,
   const EkfStateAdapterConfig & config = {});
 
 // Validates freshness and strict timestamp ordering. A zero maximum age turns

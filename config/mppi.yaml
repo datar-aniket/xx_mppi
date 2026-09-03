@@ -1,7 +1,7 @@
 # Jetson Orin NX target. K/T/dt are compile-independent runtime dimensions;
 # changing them reallocates persistent CUDA buffers but does not alter messages.
-num_samples: 1001
-horizon: 30
+num_samples: 2001
+horizon: 35
 dt: 0.1
 solve_rate_hz: 50.0
 visualization_rate_hz: 20.0  # reduced-rate RViz publishing and rollout snapshots
@@ -9,7 +9,7 @@ num_rollouts: 15             # number of best-weighted sampled rollouts to draw
 # Rollout frame. frenet integrates (e, dphi, s) against the raceline curvature;
 # cartesian integrates (east, north, yaw_enu) and reprojects each state onto the
 # raceline for the cost. Both use the same body model, costs and messages.
-frame: cartesian
+frame: frenet
 integrator: euler
 # The driven-wheel/tire loop is stiff: dt / integration_substeps must stay below
 # I / (r^2 C), which is 0.039 s for the current vehicle profile. Startup fails
@@ -29,7 +29,7 @@ direct_control_throttle_min: -50.0
 direct_control_throttle_max: 50.0
 # MPPI steering is positive-left. Set -1.0 when the actuator chain downstream of
 # cmd_vel is positive-right (PID_lanekeeping compensates with invert_steering).
-direct_control_steering_scale: -3.5
+direct_control_steering_scale: -4.5
 direct_control_steering_limit_rad: 1.0
 
 observation:
@@ -37,23 +37,23 @@ observation:
   # this false until steering_scale_to_rad / steering_offset_rad / torque_scale_to_nm
   # are calibrated, otherwise the warm start clamps to a control bound and the
   # control-smoothness cost drags the first command there.
-  use_measured_control_feedback: false
+  use_measured_control_feedback: true
   # Largest sideslip the body model and sideslip costs may see. Projection still
   # uses the full measured course heading.
   maximum_model_sideslip_rad: 0.8
 
 sigma:
-  steering_angle_rad: 0.10
-  wheel_torque_nm: 0.1
+  steering_angle_rad: 0.08
+  wheel_torque_nm: 0.2
 
 # Provisional torque bounds pending final vehicle characterization.
 control_bounds:
-  min: {steering_angle_rad: -0.5, wheel_torque_nm: -2.0}
-  max: {steering_angle_rad:  0.5, wheel_torque_nm: 2.0}
+  min: {steering_angle_rad: -0.4, wheel_torque_nm: -2.0}
+  max: {steering_angle_rad:  0.4, wheel_torque_nm: 1.5}
 
 noise_smoothing_window: 5
 control_delay_steps: 0
-control_cost_gamma: 0.0
+control_cost_gamma: 0.8
 special_samples: true
 use_reference_controls: false
 expected_trajectory: true
@@ -69,5 +69,5 @@ adaptation:
   sigma_scale_min: 0.5
   sigma_scale_max: 2.0
   speed_scaled_steering: true
-  steering_reference_speed_mps: 4.0
+  steering_reference_speed_mps: 3.0
   steering_minimum_scale: 0.2

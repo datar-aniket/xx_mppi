@@ -12,7 +12,7 @@
 namespace xxcar::mppi {
 namespace {
 
-using EkfState = ekf_mcu_driver::msg::EkfState;
+using EkfState = xxcar_msgs::msg::EkfState;
 
 EkfState ValidMessage() {
   EkfState message;

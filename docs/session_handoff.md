@@ -89,8 +89,8 @@ map, or online map-update path.
 ## ROS interfaces
 
 The input is the existing
-`ekf_mcu_driver/msg/EkfState` message from
-`../ekf_mcu_driver/msg/EkfState.msg`. The node subscribes to `ekf/state` by
+`xxcar_msgs/msg/EkfState` message from
+`../xxCAR_msgs/msg/EkfState.msg`. The node subscribes to `ekf/state` by
 default. The adapter maps:
 
 - `header.stamp` to the solution pose time;

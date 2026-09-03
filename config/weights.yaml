@@ -3,7 +3,7 @@ reference_tracking:
   speed: 0.0
   sideslip: 0.0
   driven_wheel_speed: 0.0
-  lateral_deviation: 5.0
+  lateral_deviation: 10.0
   relative_heading: 1.0
   path_evolution: 0.0
 
@@ -15,18 +15,18 @@ progress:
   weight: 1.0
 
 boundary: 
-  weight: 200.0
+  weight: 2000.0
   margin: 0.1
 
 crash: 
-  weight: 20000.0
+  weight: 60000.0
   discount: 0.9
   buffer: 0.0
 
 sideslip_limit: 
-  weight: 200.0
+  weight: 0.0
   max_slip: 1.2
-  kill_weight: 6000.0
+  kill_weight: 0.0
 
 lateral_damping: 
   weight: 1.0
@@ -41,5 +41,5 @@ control_effort:
   wheel_torque_nm: 0.00001
 
 control_smoothness: 
-  steering_angle_rad: 20000.0
-  wheel_torque_nm: 0.001
+  steering_angle_rad: 100.0
+  wheel_torque_nm: 0.00001
