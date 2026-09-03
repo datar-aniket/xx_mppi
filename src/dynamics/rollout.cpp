@@ -17,7 +17,8 @@ std::vector<State> RolloutAnalytic(
   states.front() = initial_state;
   for (std::size_t t = 0; t < controls.size(); ++t) {
     const auto derivative = [&](const State & state, const Control & control) {
-        const float curvature = raceline.Interpolate(state[kPathEvolution]).curvature_inv_m;
+        const float curvature = dynamics.frame() == FrameKind::kCartesian ?
+          0.0F : raceline.Interpolate(state[kPathEvolution]).curvature_inv_m;
         return dynamics.Derivative(state, control, curvature);
       };
     states[t + 1U] = IntegrateStep(

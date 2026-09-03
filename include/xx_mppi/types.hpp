@@ -21,10 +21,30 @@ enum BodyIndex : std::size_t {
   kDrivenWheelSpeed = 3,
 };
 
+// Frenet frame slots. e is positive to the LEFT of the raceline tangent,
+// dphi is the course heading relative to the path tangent, and s is the
+// loop-continuous (unwrapped) path evolution.
 enum FrameIndex : std::size_t {
   kLateralDeviation = 4,
   kRelativeHeading = 5,
   kPathEvolution = 6,
+};
+
+// Cartesian frame slots occupy the same three trailing entries. Position is
+// map-frame ENU metres and heading is standard ROS ENU yaw (CCW from east),
+// not the EPIC CSV heading. Frenet quantities used by the cost function are
+// recovered by projecting each rollout state onto the raceline.
+enum CartesianFrameIndex : std::size_t {
+  kEastM = 4,
+  kNorthM = 5,
+  kHeadingEnu = 6,
+};
+
+// Frame the rollout integrates in. Both frames share the same state width,
+// controls, costs, and published messages.
+enum class FrameKind : std::uint8_t {
+  kFrenet = 0,
+  kCartesian = 1,
 };
 
 enum ControlIndex : std::size_t {
@@ -104,6 +124,7 @@ struct MppiConfig {
   bool use_reference_controls{true};
   bool expected_trajectory{true};
   std::uint64_t seed{0};
+  FrameKind frame{FrameKind::kFrenet};
   AdaptationConfig adaptation{};
 };
 
@@ -170,9 +191,15 @@ struct MppiDiagnostics {
   std::uint32_t finite_rollouts{};
 };
 
+struct WeightedRollout {
+  std::vector<State> states;  // T + 1
+  float weight{};
+};
+
 struct MppiSolution {
   std::vector<State> states;       // T + 1 internally
   std::vector<Control> controls;   // T
+  std::vector<WeightedRollout> sampled_rollouts;  // optional, highest weight first
   MppiDiagnostics diagnostics{};
 };
 

@@ -1,17 +1,45 @@
 reference_tracking:
   yaw_rate: 0.0
   speed: 0.0
-  sideslip: 5.0
+  sideslip: 0.0
   driven_wheel_speed: 0.0
-  lateral_deviation: 10.0
+  lateral_deviation: 5.0
   relative_heading: 1.0
   path_evolution: 0.0
-velocity_profile: {weight: 30.0, over_weight: 4.0}
-progress: {weight: 1.0}
-boundary: {weight: 200.0, margin: 1.0}
-crash: {weight: 20000.0, discount: 0.9, buffer: 0.0}
-sideslip_limit: {weight: 200.0, max_slip: 0.8, kill_weight: 60000.0}
-lateral_damping: {weight: 1.0, decay_rate: 0.2}
-wheel_slip: {weight: 500.0, band: 0.2}
-control_effort: {steering_angle_rad: 0.001, wheel_torque_nm: 0.0001}
-control_smoothness: {steering_angle_rad: 10000.0, wheel_torque_nm: 0.1}
+
+velocity_profile: 
+  weight: 50.0
+  over_weight: 2.0
+
+progress: 
+  weight: 1.0
+
+boundary: 
+  weight: 200.0
+  margin: 0.1
+
+crash: 
+  weight: 20000.0
+  discount: 0.9
+  buffer: 0.0
+
+sideslip_limit: 
+  weight: 200.0
+  max_slip: 1.2
+  kill_weight: 6000.0
+
+lateral_damping: 
+  weight: 1.0
+  decay_rate: 0.2
+
+wheel_slip: 
+  weight: 500.0
+  band: 0.2
+
+control_effort: 
+  steering_angle_rad: 0.0001
+  wheel_torque_nm: 0.00001
+
+control_smoothness: 
+  steering_angle_rad: 20000.0
+  wheel_torque_nm: 0.001

@@ -19,7 +19,7 @@ class CudaMppiController::Impl {
 
 CudaMppiController::CudaMppiController(
   MppiConfig config, CostWeights, VehicleParameters, ModelKind, const Raceline &,
-  IntegratorKind, std::string)
+  IntegratorKind, std::string, float)
 : impl_(std::make_unique<Impl>(std::move(config))) {}
 
 CudaMppiController::~CudaMppiController() = default;
@@ -27,7 +27,8 @@ CudaMppiController::CudaMppiController(CudaMppiController &&) noexcept = default
 CudaMppiController & CudaMppiController::operator=(CudaMppiController &&) noexcept = default;
 
 MppiSolution CudaMppiController::Solve(
-  const State &, const ReferenceHorizon &, const Control &, float, bool)
+  const State &, const ReferenceHorizon &, const Control &, float, float, bool,
+  std::uint32_t)
 {
   return impl_->Solve();
 }

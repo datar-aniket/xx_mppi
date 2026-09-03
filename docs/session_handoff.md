@@ -1,6 +1,6 @@
 # MPPI port session handoff
 
-Last updated: 2026-09-01
+Last updated: 2026-09-02
 
 This document captures the decisions, implementation state, validation, and
 remaining work from the MPPI porting session so work can continue in another
@@ -38,8 +38,9 @@ Requirements agreed during the session:
   the Orin NX.
 - Runtime YAML changes, including sample count, do not require recompilation.
   Restart the node so it reloads the configuration and reallocates buffers.
-- The controller publishes a ROS trajectory only. A separate downstream
-  controller owns MCU/UART communication.
+- The controller publishes a ROS trajectory by default. An explicit direct
+  mode can instead publish the first optimized command as a
+  `geometry_msgs/msg/Twist`; `ekf_mcu_driver` still owns MCU/UART communication.
 - Make small, tested changes and commit each feature so development remains
   traceable.
 
@@ -114,11 +115,38 @@ increasing pose time. The default maximum age is 0.10 s and future tolerance is
 and the MPPI warm start. NaN sideslip is replaced with zero only below 0.3 m/s;
 it is rejected while moving.
 
-The output is `xxcar_msgs/msg/VehicleControlTrajectory` on
+For bench testing, `require_solution_validity:=false` bypasses only the
+`solution_status` bitmask gate. Source validity, quaternion, finite-value,
+freshness, and timestamp-order checks remain enabled. The default stays `true`.
+This mode was verified against the live EKF stream (`solution_status=83`) on an
+isolated trajectory topic: the smoke checker passed with 334 trajectories at
+33.37 Hz and 1,001 correlated state messages.
+
+The default output is `xxcar_msgs/msg/VehicleControlTrajectory` on
 `vehicle_control_trajectory`. It contains publication time, solution pose time,
 `dt`, horizon, `horizon` ENU `(x,y)` states, and `horizon` steering/torque
 controls. The terminal internal state `x[T]` is intentionally not published.
-No UART message is published by `xx_mppi`.
+With `publish_direct_control:=true`, trajectory publication is disabled and the
+first optimized command is published as `geometry_msgs/msg/Twist` on `cmd_vel`
+by default. This follows `PID_lanekeeping`: `angular.z` is steering radians and
+`linear.x` is the longitudinal command. In `control_mode: duty_cycle`, MPPI
+wheel torque is converted using `direct_control_torque_to_throttle_scale` and
+clamped to the configured direct throttle limits (default `[-1, 1]`). In
+`control_mode: torque`, the wheel torque in Nm passes unchanged without that
+mapping or clamp. Safety/output defaults, including
+`require_solution_validity: true`, are loaded from `mppi.yaml`; explicit ROS
+parameters override them. No UART message is published by `xx_mppi`.
+
+Optional visualization (`publish_visualization:=true`) publishes the expected
+horizon as `nav_msgs/Path`, the best-weighted sampled rollouts as
+`visualization_msgs/MarkerArray`, plus latched raceline, positive-`e` left
+boundary, and negative-`e` right boundary paths. A dedicated latest-only worker
+does the Frenet-to-map conversion and ROS visualization publication after each
+requested snapshot. `visualization_rate_hz` and `num_rollouts` in `mppi.yaml`
+control its reduced frequency and rollout count. All ROS endpoints use
+best-effort reliability. Static paths retain transient-local durability and are
+also republished at 1 Hz so late RViz displays work with volatile durability.
+The sample launch enables visualization.
 
 For vehicle testing, launch `ekf_mcu_driver` with its direct control sender
 disabled:
@@ -168,6 +196,10 @@ otherwise synchronized to the vehicle workspace before rebuilding there.
 There is also an existing user modification to `config/weights.yaml`. It was
 deliberately left uncommitted and untouched by all assistant commits.
 
+The current Orin workspace has an additional uncommitted TensorRT 10 build fix
+in `tools/build_tensorrt_engine.cpp`, plus this handoff update. It must be
+committed or otherwise preserved together with the earlier local commits.
+
 ## Build and config resolution
 
 On the Orin workspace (reported as `~/fireball_ws`), build with:
@@ -196,11 +228,13 @@ ros2 launch xx_mppi mppi.launch.py
 With `--symlink-install`, the installed YAML files point to
 `src/xx_mppi/config`; configuration-only changes are visible without rebuilding
 after restarting the node. Paths inside `model.yaml`, including
-`raceline.csv`, `vehicle.yaml`, and `model.plan`, resolve relative to the chosen
-config directory. An external set can still be selected explicitly with
+`vehicle.yaml` and `model.plan`, resolve relative to the chosen config directory.
+The raceline uses `raceline_path: "${current_map}"`; `current_map` names a map
+folder and the loader derives `<folder>/<folder>_frenet_map.csv`. An external
+configuration set can still be selected with
 `config_directory:=/absolute/path/to/config`.
 
-## Latest Jetson build issue and fix
+## Jetson build issues and fixes
 
 The first Orin build used CUDA 12.6.68 and TensorRT 10.3.0.30. It failed while
 compiling `xxcar_build_trt_engine` because `NvInferRuntimeBase.h` included
@@ -208,12 +242,21 @@ compiling `xxcar_build_trt_engine` because `NvInferRuntimeBase.h` included
 directory. Commit `cae730d` changes its link dependencies to include
 `CUDA::cudart`, which supplies the required CUDA headers and runtime dependency.
 
+After that fix, the build exposed a TensorRT 10 API ownership error:
+`IOptimizationProfile` has a protected destructor, but the engine-builder tool
+stored the builder-owned profile in `std::unique_ptr`. The current correction
+keeps the result of `createOptimizationProfile()` as a non-owning pointer,
+checks the return value of `addOptimizationProfile()`, and uses zero network
+creation flags on TensorRT 10 because explicit batch is now unconditional.
+This also removes the TensorRT 10 deprecation warning for `kEXPLICIT_BATCH`.
+
 The GCC messages about `std::pair<float,float>` parameter passing changing in
 GCC 10.1 are ABI notes, not build errors. Warnings that MPPI CMake variables are
 unused by `xxcar_msgs` or `ekf_mcu_driver` are also harmless because colcon
 passes the same CMake arguments to every package in `--packages-up-to`.
 
-After synchronizing `cae730d`, retry just the controller package with:
+The following clean-cache controller build now succeeds on the Orin with CUDA
+12.6.68 and TensorRT 10.3.0.30:
 
 ```bash
 cd ~/fireball_ws
@@ -230,15 +273,26 @@ colcon build --symlink-install --packages-select xx_mppi \
   -DXX_MPPI_CUDA_ARCHITECTURES=87
 ```
 
-This exact TensorRT 10.3 compilation still needs confirmation on the Orin; the
-development host does not have TensorRT installed.
-
 ## Verification completed
 
 - Clean CPU package build passed.
 - Clean CUDA build targeting `sm_87` passed on the development host.
-- All 18 individual controller GTests passed; the colcon result also reported
-  22 total test records with no errors or failures.
+- Clean CUDA 12.6.68 and TensorRT 10.3.0.30 package build targeting `sm_87`
+  passed on the Orin after correcting optimization-profile ownership.
+- The default config now includes a sample 10 m diameter circular raceline and
+  companion map metadata. The installed default config loads without an
+  override, and a 2,001-sample CUDA solve completed with all rollouts finite.
+- `sample_test.launch.py` uses isolated `/xx_mppi/sample_ekf_state` and
+  `/xx_mppi/sample_vehicle_control_trajectory` topics and runs the controller
+  without weakening the production EKF safety gate or exposing sample output
+  to the normal actuator path. The ROS smoke checker passed with 336
+  trajectories at 33.60 Hz and 1,001 correlated sample states.
+- The CPU-only test build passed all 18 individual controller GTests; the
+  colcon result reported 22 total test records with no errors or failures.
+- In the CUDA/TensorRT build, 17 of 18 individual GTests passed. The remaining
+  projection test could not create a CUDA stream because the current execution
+  environment cannot initialize the Jetson memory manager; its CPU equivalent
+  passed.
 - The launch file loads and exposes all expected arguments.
 - A clean `--symlink-install` build was verified: installed YAML files were
   symlinks to source YAML files and package-share lookup found them.
@@ -246,19 +300,76 @@ development host does not have TensorRT installed.
   timestamp checks, Frenet projection, and reached the solver boundary.
 - A synthetic DDS state/trajectory publisher passed the read-only pipeline
   checker with 301 trajectories at approximately 100.01 Hz.
-- The development host has no usable NVIDIA driver and no TensorRT libraries,
-  so it cannot validate an actual GPU solve, TensorRT compilation, or the 100 Hz
-  vehicle performance target.
+- An actual GPU solve, TensorRT engine creation from a real ONNX model, and the
+  100 Hz vehicle performance target still require runtime validation.
+
+## Frame conventions review (2026-09-02)
+
+The geometric frame chain was audited end to end and is correct. ENU yaw to CSV
+`phi`, the left-positive lateral deviation, the `k = dphi/ds` sign, the Frenet
+derivative, and `ToCartesian` all agree with each other and with every surveyed
+map under `~/map`; the `test_frames` suite now pins each of them, including a
+rollout parity check that the Frenet and Cartesian frames trace the same ENU
+path on a surveyed loop.
+
+`mppi.yaml` gained `frame: frenet | cartesian`. The Cartesian frame integrates
+ENU position and heading and reprojects each rollout state onto the raceline on
+the GPU, so costs, messages and visualization are unchanged. Measured on the
+Orin with `K=1001, T=40`: 8.8 ms per solve in `frenet`, 13.7 ms in `cartesian`,
+and the two frames' published paths agree within 0.1-0.2 m over the full-lap
+horizon.
+
+What is actually wrong is the signal conversion between `EkfState` and the
+controller, which is blocker 3 below and was never done:
+
+- `steering_angle` spans `0 .. 2.4` with no zero crossing, `wheel_torque_nm`
+  spans `-55 .. 46`, and `motor_speed_ms` peaks near `1.7` while the vehicle is
+  doing `3.3 m/s`. With the default unit scales the measured steering and torque
+  clamp to a control bound every cycle; at steady state that warm start shifts
+  the first optimized steering command by about 0.23 rad, so
+  `observation.use_measured_control_feedback` now defaults to false.
+- Regressing `r / V` against `steering_angle` gives a negative slope in both
+  recorded bags, and `PID_lanekeeping` compensates for the same hardware with
+  `invert_steering: true`. `direct_control_steering_scale` (default `1.0`) now
+  makes that inversion configurable; set it to `-1.0` once confirmed on the
+  bench.
+- `side_slip_rad` is exactly `atan2(v_y, v_x)` of the reported body twist and
+  reaches 2.7 rad in recorded runs. That is the cause of the reported
+  "path goes backward then forward": the projection's relative course heading is
+  `yaw + beta - phi_path`, so a 2 rad sideslip pushes `|dphi|` past 90 degrees,
+  `s_dot = V cos(dphi)` turns negative, and the rollout retreats along the track
+  before the model turns it around. `ConditionedSideslip` now bounds the
+  estimate once, at `observation.maximum_model_sideslip_rad`, and the projection
+  and the body model both use that same value so the two frames share an initial
+  condition. `MppiRosRuntime` logs a throttled warning whenever the bound bites.
+
+Two solver defects were fixed alongside: the crash and sideslip latches were
+being set from the initial state, which is shared by every sample and therefore
+removed all boundary discrimination from the solve; and the expected-trajectory
+average was linear over angle channels, which is wrong across the +/-pi seam and
+matters most for the Cartesian ENU yaw.
+
+Also worth knowing when reading RViz: `horizon: 40` at `dt: 0.1` with the 5 m/s
+reference speed covers 20 m, which is 98% of the `last_run_sept1`/`iso1` lap and
+123% of the `sept_2_00` lap. The expected path therefore wraps the whole loop and
+draws over itself. Shorten `horizon`, shorten `dt`, or lower the map's speed
+profile if a shorter preview is wanted.
+
+Still open: with `lambda: 2.0` against a cost scale near 2e5, the first solves
+after a reset are effectively an argmin over the sampled population (ESS 1.0).
+Adaptive lambda climbs to roughly 580 and ESS to 4-20 within a few hundred
+solves, but `ess_fraction_min/max` of `0.002 .. 0.02` targets only 2-20 of 1001
+samples, which is close to argmin by design. Worth revisiting with the tuned
+weights.
 
 ## Remaining blockers and next actions
 
-1. Synchronize the local implementation commits, especially `cae730d`, to the
-   Orin and rebuild. Capture the first compiler/linker error if another
-   TensorRT 10.3 API incompatibility appears.
-2. Add the real EPIC-format `raceline.csv` to `xx_mppi/config` or select an
-   external config directory. The production `model.yaml` references this file,
-   but it was absent at the last check. The node intentionally fails fast
-   without it.
+1. Commit and push the local implementation and TensorRT 10 ownership fix when
+   ready, while keeping the existing user change to `config/weights.yaml`
+   separate unless it is intentionally included.
+2. Replace the sample `config/raceline.csv` with the surveyed EPIC-format
+   vehicle raceline, or select an external production config directory. The
+   included circle is only for bench and ROS pipeline testing.
 3. Confirm the EKF/VESC field units on the actual MCU pipeline. In particular,
    calibrate steering to radians, torque to wheel-side Nm, and motor speed to
    m/s using driver constants (`VESC_STEER_K`, `VESC_TORQUE_K`,

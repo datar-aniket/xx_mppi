@@ -10,6 +10,7 @@
 namespace xxcar::mppi {
 
 struct EkfStateAdapterConfig {
+  bool require_solution_validity{true};
   bool require_absolute_yaw{true};
   bool require_vesc{true};
   float steering_scale_to_rad{1.0F};

@@ -1,6 +1,7 @@
 #include "xx_mppi/reference/raceline.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -14,6 +15,22 @@
 namespace xxcar::mppi {
 namespace {
 
+std::string TrimCsvField(const std::string & value) {
+  std::size_t first = 0U;
+  while (first < value.size() &&
+    std::isspace(static_cast<unsigned char>(value[first])) != 0)
+  {
+    ++first;
+  }
+  std::size_t last = value.size();
+  while (last > first &&
+    std::isspace(static_cast<unsigned char>(value[last - 1U])) != 0)
+  {
+    --last;
+  }
+  return value.substr(first, last - first);
+}
+
 std::vector<std::string> SplitCsvLine(const std::string & line) {
   std::vector<std::string> fields;
   std::string field;
@@ -22,13 +39,13 @@ std::vector<std::string> SplitCsvLine(const std::string & line) {
     if (ch == '"') {
       quoted = !quoted;
     } else if (ch == ',' && !quoted) {
-      fields.push_back(field);
+      fields.push_back(TrimCsvField(field));
       field.clear();
     } else {
       field.push_back(ch);
     }
   }
-  fields.push_back(field);
+  fields.push_back(TrimCsvField(field));
   return fields;
 }
 
@@ -152,10 +169,15 @@ Raceline Raceline::LoadCsv(const std::string & path, const float closed_track_ga
       throw std::runtime_error("raceline s must be finite and strictly increasing");
     }
   }
-  const auto & first = raceline.points_.front();
-  const auto & last = raceline.points_.back();
-  raceline.closed_ = std::hypot(last.east_m - first.east_m, last.north_m - first.north_m) <=
-    closed_track_gap_m;
+  const float closing_distance_m = std::hypot(
+    raceline.points_.back().east_m - raceline.points_.front().east_m,
+    raceline.points_.back().north_m - raceline.points_.front().north_m);
+  raceline.closed_ = closing_distance_m <= closed_track_gap_m;
+  if (raceline.closed_ && closing_distance_m > 1.0e-5F) {
+    auto closing_point = raceline.points_.front();
+    closing_point.s_m = raceline.points_.back().s_m + closing_distance_m;
+    raceline.points_.push_back(closing_point);
+  }
   return raceline;
 }
 
@@ -315,6 +337,15 @@ ReferenceHorizon Raceline::Sample(
     }
   }
   return result;
+}
+
+std::pair<float, float> StateToEnu(
+  const Raceline & raceline, const State & state, const FrameKind frame)
+{
+  if (frame == FrameKind::kCartesian) {
+    return {state[kEastM], state[kNorthM]};
+  }
+  return raceline.ToCartesian(state[kPathEvolution], state[kLateralDeviation]);
 }
 
 Projection ContinuousProjector::Update(

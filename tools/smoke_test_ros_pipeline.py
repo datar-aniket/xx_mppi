@@ -3,10 +3,13 @@
 
 import argparse
 import math
+from pathlib import Path
 import sys
 import time
 
 import rclpy
+import yaml
+from ament_index_python.packages import get_package_share_directory
 from ekf_mcu_driver.msg import EkfState
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -21,6 +24,26 @@ def stamp_seconds(stamp):
     return float(stamp.sec) + 1.0e-9 * float(stamp.nanosec)
 
 
+def load_expected_horizon(config_directory):
+    directory = (
+        Path(config_directory)
+        if config_directory
+        else Path(get_package_share_directory("xx_mppi")) / "config"
+    )
+    path = directory / "mppi.yaml"
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            config = yaml.safe_load(stream)
+    except (OSError, yaml.YAMLError) as error:
+        raise ValueError(f"cannot load MPPI config '{path}': {error}") from error
+    horizon = config.get("horizon") if isinstance(config, dict) else None
+    if isinstance(horizon, bool) or not isinstance(horizon, int):
+        raise ValueError(f"MPPI config '{path}' must contain an integer horizon")
+    if horizon <= 0 or horizon >= 65535:
+        raise ValueError(f"MPPI config horizon {horizon} is outside [1, 65534]")
+    return horizon
+
+
 class PipelineMonitor(Node):
     def __init__(self, args):
         super().__init__("xx_mppi_pipeline_smoke_test")
@@ -32,7 +55,7 @@ class PipelineMonitor(Node):
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=100,
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
         self.create_subscription(EkfState, args.state_topic, self.on_state, qos)
@@ -95,12 +118,27 @@ def main():
     )
     parser.add_argument("--minimum-rate-hz", type=float, default=80.0)
     parser.add_argument("--maximum-solution-age-ms", type=float, default=100.0)
-    parser.add_argument("--expected-horizon", type=int, default=50)
+    parser.add_argument(
+        "--config-directory",
+        help="configuration directory containing mppi.yaml; defaults to package share",
+    )
+    parser.add_argument(
+        "--expected-horizon",
+        type=int,
+        help="override the horizon loaded from mppi.yaml",
+    )
     parser.add_argument("--maximum-steering-rad", type=float, default=0.5)
     parser.add_argument("--maximum-torque-nm", type=float, default=5.0)
     args, ros_args = parser.parse_known_args()
     if args.duration <= 0.0 or args.minimum_rate_hz < 0.0:
         parser.error("duration must be positive and minimum rate nonnegative")
+    if args.expected_horizon is None:
+        try:
+            args.expected_horizon = load_expected_horizon(args.config_directory)
+        except ValueError as error:
+            parser.error(str(error))
+    elif args.expected_horizon <= 0 or args.expected_horizon >= 65535:
+        parser.error("expected horizon must be in [1, 65534]")
 
     rclpy.init(args=ros_args)
     monitor = PipelineMonitor(args)
@@ -112,7 +150,16 @@ def main():
         monitor.destroy_node()
         rclpy.shutdown()
 
-    missing_stamps = set(monitor.solution_stamps) - monitor.state_stamps
+    # A monitor joining an already-running pipeline can receive one trajectory
+    # whose source state predates its subscription. Only correlate solutions
+    # from the interval in which this monitor actually observed state messages.
+    first_state_stamp = min(monitor.state_stamps) if monitor.state_stamps else None
+    observed_solution_stamps = {
+        stamp
+        for stamp in monitor.solution_stamps
+        if first_state_stamp is None or stamp >= first_state_stamp
+    }
+    missing_stamps = observed_solution_stamps - monitor.state_stamps
     if missing_stamps:
         monitor.fail(
             f"{len(missing_stamps)} solution timestamp(s) were not observed on the state topic"
@@ -136,7 +183,8 @@ def main():
         return 1
     print(
         f"MPPI ROS pipeline: PASS ({count} trajectories, {rate_hz:.2f} Hz, "
-        f"{len(monitor.state_stamps)} state stamps)"
+        f"{len(monitor.state_stamps)} state stamps, horizon "
+        f"{args.expected_horizon})"
     )
     return 0
 

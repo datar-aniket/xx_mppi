@@ -72,6 +72,25 @@ TEST(EkfStateAdapter, RejectsMissingPositionValidity) {
   EXPECT_THROW((void)ToVehicleObservation(message), std::invalid_argument);
 }
 
+TEST(EkfStateAdapter, AllowsMissingSolutionBitsWhenValidityCheckIsDisabled) {
+  auto message = ValidMessage();
+  message.solution_status = 0U;
+  EkfStateAdapterConfig config;
+  config.require_solution_validity = false;
+
+  EXPECT_NO_THROW((void)ToVehicleObservation(message, config));
+}
+
+TEST(EkfStateAdapter, StillRequiresSourcesWhenSolutionValidityIsDisabled) {
+  auto message = ValidMessage();
+  message.solution_status = 0U;
+  message.source_valid = 0U;
+  EkfStateAdapterConfig config;
+  config.require_solution_validity = false;
+
+  EXPECT_THROW((void)ToVehicleObservation(message, config), std::invalid_argument);
+}
+
 TEST(EkfStateAdapter, RejectsMissingVescByDefault) {
   auto message = ValidMessage();
   message.source_valid = static_cast<std::uint8_t>(

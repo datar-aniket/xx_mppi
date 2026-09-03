@@ -15,7 +15,11 @@ set(XX_MPPI_CUDA_ARCHITECTURES "87" CACHE STRING
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(ekf_mcu_driver REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(xxcar_msgs REQUIRED)
 
@@ -36,16 +40,20 @@ target_compile_options(xx_mppi_core PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Wconversion>)
 
 add_library(xx_mppi_ros SHARED
+  src/ros/direct_control_message.cpp
   src/ros/ekf_state_adapter.cpp
   src/ros/mppi_node.cpp
   src/ros/runtime.cpp
-  src/ros/trajectory_message.cpp)
+  src/ros/runtime_config.cpp
+  src/ros/trajectory_message.cpp
+  src/ros/visualization.cpp)
 target_include_directories(xx_mppi_ros PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(xx_mppi_ros xx_mppi_core)
 ament_target_dependencies(
-  xx_mppi_ros ament_index_cpp ekf_mcu_driver rclcpp xxcar_msgs)
+  xx_mppi_ros ament_index_cpp ekf_mcu_driver geometry_msgs nav_msgs rclcpp
+  std_msgs visualization_msgs xxcar_msgs)
 target_compile_options(xx_mppi_ros PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 
 add_executable(xx_mppi_node src/ros/main.cpp)
@@ -129,6 +137,7 @@ if(XX_MPPI_HAS_TENSORRT)
 endif()
 install(PROGRAMS
   tools/export_pytorch_dynamics.py
+  tools/publish_sample_ekf_state.py
   tools/smoke_test_ros_pipeline.py
   DESTINATION lib/${PROJECT_NAME})
 
@@ -137,6 +146,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_raceline test/test_raceline.cpp)
   target_link_libraries(test_raceline xx_mppi_core)
   target_compile_definitions(test_raceline PRIVATE
+    XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_frames test/test_frames.cpp)
+  target_link_libraries(test_frames xx_mppi_core)
+  target_compile_definitions(test_frames PRIVATE
     XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
 
   ament_add_gtest(test_dynamics_costs test/test_dynamics_costs.cpp)
@@ -148,15 +162,23 @@ if(BUILD_TESTING)
   target_link_libraries(test_config_message xx_mppi_ros)
   target_compile_definitions(test_config_message PRIVATE
     XX_MPPI_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  set_tests_properties(test_config_message PROPERTIES
+    ENVIRONMENT "current_map=${CMAKE_CURRENT_SOURCE_DIR}/test/current_map")
 
   ament_add_gtest(test_ekf_state_adapter test/test_ekf_state_adapter.cpp)
   target_link_libraries(test_ekf_state_adapter xx_mppi_ros)
   target_compile_definitions(test_ekf_state_adapter PRIVATE
+    XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_visualization test/test_visualization.cpp)
+  target_link_libraries(test_visualization xx_mppi_ros)
+  target_compile_definitions(test_visualization PRIVATE
     XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
 endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(xx_mppi_core xx_mppi_ros)
 ament_export_dependencies(
-  ament_index_cpp ekf_mcu_driver rclcpp xxcar_msgs yaml-cpp)
+  ament_index_cpp ekf_mcu_driver geometry_msgs nav_msgs rclcpp std_msgs
+  visualization_msgs xxcar_msgs yaml-cpp)
 ament_package()

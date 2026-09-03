@@ -61,4 +61,9 @@ class ContinuousProjector {
   std::optional<float> s_hint_;
 };
 
+// Converts a rollout state to map-frame ENU metres. Frenet states are mapped
+// through the raceline; Cartesian states already carry ENU position.
+[[nodiscard]] std::pair<float, float> StateToEnu(
+  const Raceline & raceline, const State & state, FrameKind frame);
+
 }  // namespace xxcar::mppi

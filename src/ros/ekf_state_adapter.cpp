@@ -47,20 +47,22 @@ VehicleObservation ToVehicleObservation(
 {
   ValidateEkfStateAdapterConfig(config);
 
-  std::uint8_t required_solution = static_cast<std::uint8_t>(
-    EkfState::SOLUTION_STATUS_ATTITUDE_VALID |
-    EkfState::SOLUTION_STATUS_VEL_HORIZ |
-    EkfState::SOLUTION_STATUS_POS_HORIZ);
-  if (config.require_absolute_yaw) {
-    required_solution = static_cast<std::uint8_t>(
-      required_solution | EkfState::SOLUTION_STATUS_YAW_ABSOLUTE);
-  } else if ((message.solution_status & static_cast<std::uint8_t>(
-      EkfState::SOLUTION_STATUS_YAW_RELATIVE |
-      EkfState::SOLUTION_STATUS_YAW_ABSOLUTE)) == 0U)
-  {
-    throw std::invalid_argument("EKF state has no valid yaw solution");
+  if (config.require_solution_validity) {
+    std::uint8_t required_solution = static_cast<std::uint8_t>(
+      EkfState::SOLUTION_STATUS_ATTITUDE_VALID |
+      EkfState::SOLUTION_STATUS_VEL_HORIZ |
+      EkfState::SOLUTION_STATUS_POS_HORIZ);
+    if (config.require_absolute_yaw) {
+      required_solution = static_cast<std::uint8_t>(
+        required_solution | EkfState::SOLUTION_STATUS_YAW_ABSOLUTE);
+    } else if ((message.solution_status & static_cast<std::uint8_t>(
+        EkfState::SOLUTION_STATUS_YAW_RELATIVE |
+        EkfState::SOLUTION_STATUS_YAW_ABSOLUTE)) == 0U)
+    {
+      throw std::invalid_argument("EKF state has no valid yaw solution");
+    }
+    RequireBits(message.solution_status, required_solution, "solution status bits");
   }
-  RequireBits(message.solution_status, required_solution, "solution status bits");
 
   std::uint8_t required_sources = static_cast<std::uint8_t>(
     EkfState::SOURCE_VALID_ESTIMATOR | EkfState::SOURCE_VALID_GYRO);

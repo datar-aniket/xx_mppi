@@ -26,14 +26,20 @@ source install/setup.bash
 ros2 launch xx_mppi mppi.launch.py
 ```
 
-Relative asset paths in `config/model.yaml` (for example `raceline.csv`,
-`vehicle.yaml`, and `model.plan`) are resolved relative to the same config
-directory. An external configuration remains available with
+Set `current_map` to the selected map folder before launch; the raceline path is
+derived as `<folder>/<folder>_frenet_map.csv`. Other relative assets in
+`config/model.yaml`, such as `vehicle.yaml` and `model.plan`, resolve relative
+to the config directory. An external configuration remains available with
 `config_directory:=/absolute/path/to/config`.
 
 TensorRT is optional at configure time so CPU/CUDA analytic development remains
 possible before a neural model exists. Selecting neural dynamics at runtime
 without TensorRT or a valid plan fails explicitly.
+
+This package has been compile-verified with CUDA 12.6.68 and TensorRT
+10.3.0.30 on the Orin. TensorRT optimization profiles returned by
+`createOptimizationProfile()` are builder-owned; do not wrap them in an owning
+smart pointer when updating the engine-builder tool.
 
 The 100 Hz requirement means the complete solve must remain below 10 ms,
 including state/reference copies and output synchronization. Measure after a

@@ -1,0 +1,31 @@
+# Sample-only static map metadata. The controller reads raceline.csv directly;
+# e_min/e_max in that CSV are the authoritative track boundaries.
+schema_version: 1
+name: sample_circle
+description: >-
+  Synthetic 10 m diameter counter-clockwise loop for bench and ROS pipeline
+  testing only. Do not use this map for autonomous vehicle operation.
+
+frame_id: map
+coordinates: ENU
+heading_convention: phi_equals_yaw_enu_minus_pi_over_2
+closed_loop: true
+raceline_file: raceline.csv
+
+geometry:
+  type: circle
+  center_east_m: -5.0
+  center_north_m: 0.0
+  nominal_radius_m: 5.0
+  lap_length_m: 31.415927
+
+track:
+  e_min_m: -0.75
+  e_max_m: 0.75
+  total_width_m: 1.5
+
+test_start_pose:
+  east_m: 0.0
+  north_m: 0.0
+  yaw_enu_rad: 1.5707963268
+  speed_mps: 1.5

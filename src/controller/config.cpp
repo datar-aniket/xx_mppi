@@ -1,7 +1,9 @@
 #include "xx_mppi/controller/config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -17,14 +19,90 @@ T GetOr(const YAML::Node & node, const char * key, const T & fallback) {
   return node && node[key] ? node[key].as<T>() : fallback;
 }
 
+std::string ExpandEnvironmentVariables(const std::string & value) {
+  std::string result;
+  result.reserve(value.size());
+  for (std::size_t i = 0U; i < value.size();) {
+    if (value[i] != '$') {
+      result.push_back(value[i++]);
+      continue;
+    }
+
+    std::size_t name_begin = i + 1U;
+    std::size_t name_end = name_begin;
+    if (name_begin < value.size() && value[name_begin] == '{') {
+      name_begin++;
+      name_end = value.find('}', name_begin);
+      if (name_end == std::string::npos) {
+        throw std::runtime_error("unterminated environment variable in path: " + value);
+      }
+      i = name_end + 1U;
+    } else {
+      while (name_end < value.size() &&
+        (std::isalnum(static_cast<unsigned char>(value[name_end])) != 0 ||
+        value[name_end] == '_'))
+      {
+        ++name_end;
+      }
+      i = name_end;
+    }
+
+    if (name_begin == name_end) {
+      throw std::runtime_error("empty environment variable in path: " + value);
+    }
+    const std::string name = value.substr(name_begin, name_end - name_begin);
+    const char * expanded = std::getenv(name.c_str());
+    if (expanded == nullptr || expanded[0] == '\0') {
+      throw std::runtime_error(
+        "environment variable '" + name + "' referenced by path is not set");
+    }
+    result.append(expanded);
+  }
+  return result;
+}
+
+std::string ExpandHomeDirectory(const std::string & value) {
+  if (value != "~" && value.rfind("~/", 0U) != 0U) {
+    return value;
+  }
+  const char * home = std::getenv("HOME");
+  if (home == nullptr || home[0] == '\0') {
+    throw std::runtime_error("HOME is not set; cannot expand path: " + value);
+  }
+  return value == "~" ? std::string(home) : std::string(home) + value.substr(1U);
+}
+
 std::filesystem::path Resolve(
   const std::filesystem::path & directory, const std::string & value)
 {
   if (value.empty()) {
     return {};
   }
-  const std::filesystem::path path(value);
+  const std::filesystem::path path(
+    ExpandHomeDirectory(ExpandEnvironmentVariables(value)));
   return path.is_absolute() ? path : directory / path;
+}
+
+std::filesystem::path ResolveRaceline(
+  const std::filesystem::path & config_directory, const std::string & value)
+{
+  auto path = Resolve(config_directory, value).lexically_normal();
+  if (path.empty()) {
+    return {};
+  }
+  if (std::filesystem::is_directory(path)) {
+    const auto map_name = path.filename().string();
+    if (map_name.empty()) {
+      throw std::runtime_error("raceline map directory has no folder name: " + path.string());
+    }
+    path /= map_name + "_frenet_map.csv";
+  } else if (!std::filesystem::exists(path) && path.extension() != ".csv") {
+    throw std::runtime_error("raceline map directory does not exist: " + path.string());
+  }
+  if (!std::filesystem::is_regular_file(path)) {
+    throw std::runtime_error("raceline CSV does not exist: " + path.string());
+  }
+  return path;
 }
 
 void LoadVehicle(const YAML::Node & root, VehicleParameters & output) {
@@ -93,6 +171,9 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     mppi_yaml, "expected_trajectory", config.mppi.expected_trajectory);
   config.mppi.seed = GetOr(mppi_yaml, "seed", config.mppi.seed);
   config.solve_rate_hz = GetOr(mppi_yaml, "solve_rate_hz", config.solve_rate_hz);
+  config.visualization_rate_hz = GetOr(
+    mppi_yaml, "visualization_rate_hz", config.visualization_rate_hz);
+  config.num_rollouts = GetOr(mppi_yaml, "num_rollouts", config.num_rollouts);
 
   const auto sigma = mppi_yaml["sigma"];
   config.mppi.sigma[kSteering] = GetOr(sigma, "steering_angle_rad", config.mppi.sigma[kSteering]);
@@ -135,6 +216,21 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   config.mppi.adaptation.steering_minimum_scale = GetOr(
     adaptation, "steering_minimum_scale", config.mppi.adaptation.steering_minimum_scale);
 
+  const std::string frame = GetOr(mppi_yaml, "frame", std::string("frenet"));
+  if (frame == "frenet") {
+    config.mppi.frame = FrameKind::kFrenet;
+  } else if (frame == "cartesian") {
+    config.mppi.frame = FrameKind::kCartesian;
+  } else {
+    throw std::runtime_error("unknown frame: " + frame + "; expected frenet or cartesian");
+  }
+
+  const auto observation = mppi_yaml["observation"];
+  config.use_measured_control_feedback = GetOr(
+    observation, "use_measured_control_feedback", config.use_measured_control_feedback);
+  config.maximum_model_sideslip_rad = GetOr(
+    observation, "maximum_model_sideslip_rad", config.maximum_model_sideslip_rad);
+
   const std::string integrator = GetOr(mppi_yaml, "integrator", std::string("euler"));
   if (integrator == "euler") {
     config.integrator = IntegratorKind::kEuler;
@@ -154,7 +250,7 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   } else {
     throw std::runtime_error("unknown model name: " + model);
   }
-  config.raceline_path = Resolve(
+  config.raceline_path = ResolveRaceline(
     directory, GetOr(model_yaml, "raceline_path", std::string{})).string();
   config.neural_model_path = Resolve(
     directory, GetOr(model_yaml, "neural_model_path", std::string{})).string();
@@ -211,7 +307,12 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     !(config.mppi.dt_s > 0.0F) || !std::isfinite(config.mppi.dt_s) ||
     !(config.mppi.lambda > 0.0F) || !std::isfinite(config.mppi.lambda) ||
     !(config.solve_rate_hz > 0.0F) || !std::isfinite(config.solve_rate_hz) ||
-    !(config.projection_window_m > 0.0F) || !std::isfinite(config.projection_window_m))
+    !(config.visualization_rate_hz > 0.0F) ||
+    !std::isfinite(config.visualization_rate_hz) ||
+    config.num_rollouts == 0U || config.num_rollouts > config.mppi.num_samples ||
+    !(config.projection_window_m > 0.0F) || !std::isfinite(config.projection_window_m) ||
+    !(config.maximum_model_sideslip_rad > 0.0F) ||
+    !std::isfinite(config.maximum_model_sideslip_rad))
   {
     throw std::runtime_error("invalid MPPI dimensions, timing, lambda, or projection window");
   }
@@ -241,6 +342,33 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   }
   if (config.raceline_path.empty()) {
     throw std::runtime_error("model.yaml must define raceline_path");
+  }
+
+  // The driven-wheel state is the stiffest mode in the model: the tire force
+  // reacts to slip almost instantly, so the wheel-speed loop has eigenvalue
+  // -r^2 C / I. Integrating it above the explicit stability limit makes the
+  // wheel speed ring, which drags the body speed negative and produces rollouts
+  // that reverse before moving off. Half the marginal limit is the usable step.
+  const float stiffest_stiffness = std::max(
+    config.vehicle.front_cornering_stiffness_nprad,
+    config.vehicle.rear_cornering_stiffness_nprad);
+  const float marginal_step_s = 2.0F * config.vehicle.driven_wheel_inertia_kgm2 /
+    std::max(
+      config.vehicle.wheel_radius_m * config.vehicle.wheel_radius_m *
+      stiffest_stiffness, 1.0e-9F);
+  const auto substeps = static_cast<float>(
+    config.mppi.integration_substeps == 0U ? 1U : config.mppi.integration_substeps);
+  const float step_s = config.mppi.dt_s / substeps;
+  if (!(step_s < 0.5F * marginal_step_s)) {
+    const auto required = static_cast<unsigned>(std::ceil(
+        config.mppi.dt_s / (0.5F * marginal_step_s)));
+    throw std::runtime_error(
+            "integration step " + std::to_string(step_s) +
+            " s exceeds the driven-wheel stability limit " +
+            std::to_string(0.5F * marginal_step_s) +
+            " s for this vehicle profile; raise integration_substeps to at least " +
+            std::to_string(required) + ", lower dt, or re-identify "
+            "driven_wheel_inertia_kgm2 / cornering stiffness");
   }
   return config;
 }

@@ -1,4 +1,6 @@
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -18,6 +20,28 @@ TEST(Raceline, LoadsAndDetectsClosedTrack) {
   EXPECT_TRUE(raceline.closed());
   EXPECT_EQ(raceline.points().size(), 5U);
   EXPECT_FLOAT_EQ(raceline.length(), 4.0F);
+}
+
+TEST(Raceline, AcceptsWindowsCrlfAndClosesSampledLoop) {
+  const auto path = std::filesystem::temp_directory_path() /
+    "xx_mppi_test_raceline_crlf.csv";
+  {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(stream.good());
+    stream << "s, k, E, N, phi, V, e_min, e_max\r\n"
+           << "0, 0, 0, 0, 0, 1, -1, 1\r\n"
+           << "1, 0, 0, 1, 0, 1, -1, 1\r\n"
+           << "2, 0, 0.1, 0, 0, 1, -1, 1\r\n";
+  }
+
+  const auto raceline = Raceline::LoadCsv(path.string());
+  std::filesystem::remove(path);
+  EXPECT_TRUE(raceline.closed());
+  ASSERT_EQ(raceline.points().size(), 4U);
+  EXPECT_NEAR(raceline.length(), 2.1F, 1.0e-6F);
+  EXPECT_FLOAT_EQ(raceline.points().back().east_m, 0.0F);
+  EXPECT_FLOAT_EQ(raceline.points().back().north_m, 0.0F);
+  EXPECT_FLOAT_EQ(raceline.points().back().e_max_m, 1.0F);
 }
 
 TEST(Raceline, ProjectionTracksUnwrappedSAcrossSeam) {

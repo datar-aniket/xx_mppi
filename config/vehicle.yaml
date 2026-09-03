@@ -6,17 +6,17 @@
 # axle weights/CG and fit yaw inertia, cornering stiffness, friction and the
 # locked-drivetrain equivalent inertia from logged tests before high-speed use.
 vehicle:
-  mass_kg: 2.0
-  yaw_inertia_kgm2: 0.040
+  mass_kg: 3.5
+  yaw_inertia_kgm2: 0.030
   cg_to_front_m: 0.156
   cg_to_rear_m: 0.156
-  front_cornering_stiffness_nprad: 75.0
-  rear_cornering_stiffness_nprad: 75.0
-  front_friction_coefficient: 1.0
-  rear_friction_coefficient: 1.0
+  front_cornering_stiffness_nprad: 200.0
+  rear_cornering_stiffness_nprad: 200.0
+  front_friction_coefficient: 0.5
+  rear_friction_coefficient: 0.5
   wheel_radius_m: 0.05842
   # Equivalent inertia seen at the tire for the rigidly coupled driveline.
-  driven_wheel_inertia_kgm2: 0.01
+  driven_wheel_inertia_kgm2: 0.02
   # Used by non-AWD profiles; locked AWD routes regenerative torque through
   # the shared driveline model instead.
   front_brake_bias: 0.5

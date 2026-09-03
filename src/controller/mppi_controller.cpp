@@ -9,20 +9,48 @@
 
 namespace xxcar::mppi {
 
+float ConditionedSideslip(
+  const float measured_sideslip_rad, const float speed_mps,
+  const float maximum_rad) noexcept
+{
+  if (!std::isfinite(measured_sideslip_rad)) {
+    return std::abs(speed_mps) < 0.3F ? 0.0F : measured_sideslip_rad;
+  }
+  return std::clamp(measured_sideslip_rad, -maximum_rad, maximum_rad);
+}
+
 MppiController::MppiController(ControllerConfig config, Raceline raceline)
 : config_(std::move(config)),
   raceline_(std::move(raceline)),
   projector_(raceline_, config_.projection_window_m),
   optimizer_(
     config_.mppi, config_.costs, config_.vehicle, config_.model_kind,
-    raceline_, config_.integrator, config_.neural_model_path)
+    raceline_, config_.integrator, config_.neural_model_path,
+    config_.projection_window_m)
 {
 }
 
+// Warm-start reference for the control-smoothness cost. The measured VESC
+// channels are raw actuator units unless the adapter scales are calibrated, so
+// clamping them into the control bounds would silently pin the first command
+// at a bound; the controller's own last command is the safe default.
+Control MppiController::PreviousControl(const VehicleObservation & observation) const {
+  if (!config_.use_measured_control_feedback) {
+    return last_applied_control_;
+  }
+  return Control{{
+    std::clamp(
+      observation.measured_steering_rad,
+      config_.mppi.control_min[kSteering], config_.mppi.control_max[kSteering]),
+    std::clamp(
+      observation.measured_torque_nm,
+      config_.mppi.control_min[kWheelTorque], config_.mppi.control_max[kWheelTorque])}};
+}
+
 Projection MppiController::UpdateObservation(const VehicleObservation & observation) {
-  const float sideslip = std::isfinite(observation.sideslip_rad) ?
-    observation.sideslip_rad :
-    (std::abs(observation.speed_mps) < 0.3F ? 0.0F : observation.sideslip_rad);
+  const float sideslip = ConditionedSideslip(
+    observation.sideslip_rad, observation.speed_mps,
+    config_.maximum_model_sideslip_rad);
   if (!std::isfinite(observation.east_m) || !std::isfinite(observation.north_m) ||
     !std::isfinite(observation.yaw_enu_rad) || !std::isfinite(observation.speed_mps) ||
     !std::isfinite(observation.yaw_rate_radps) || !std::isfinite(sideslip) ||
@@ -33,6 +61,9 @@ Projection MppiController::UpdateObservation(const VehicleObservation & observat
     throw std::invalid_argument("vehicle observation contains a non-finite value");
   }
 
+  // ENU yaw (CCW from east) becomes the EPIC CSV heading phi (CCW from north,
+  // path tangent (-sin phi, cos phi)). The course heading adds sideslip so the
+  // projection's relative heading is the direction the vehicle actually moves.
   const float body_heading = enu_yaw_to_heading_from_north(observation.yaw_enu_rad);
   const Projection projection = projector_.Update(
     observation.east_m, observation.north_m, body_heading,
@@ -45,7 +76,9 @@ Projection MppiController::UpdateObservation(const VehicleObservation & observat
   return projection;
 }
 
-PlannedTrajectory MppiController::PlanLatest() {
+PlannedTrajectory MppiController::PlanLatest(
+  const std::uint32_t num_visualization_rollouts)
+{
   if (!latest_) {
     throw std::runtime_error("no vehicle observation is available for planning");
   }
@@ -65,25 +98,21 @@ PlannedTrajectory MppiController::PlanLatest() {
     }
   }
 
+  const bool cartesian = config_.mppi.frame == FrameKind::kCartesian;
   const State initial{{
     observation.yaw_rate_radps,
     observation.speed_mps,
     sideslip,
     observation.driven_wheel_speed_mps,
-    projection.e_m,
-    projection.relative_course_rad,
-    projection.s_m}};
-  const Control previous_control{{
-    std::clamp(
-      observation.measured_steering_rad,
-      config_.mppi.control_min[kSteering], config_.mppi.control_max[kSteering]),
-    std::clamp(
-      observation.measured_torque_nm,
-      config_.mppi.control_min[kWheelTorque], config_.mppi.control_max[kWheelTorque])}};
+    cartesian ? observation.east_m : projection.e_m,
+    cartesian ? observation.north_m : projection.relative_course_rad,
+    cartesian ? observation.yaw_enu_rad : projection.s_m}};
+  const Control previous_control = PreviousControl(observation);
   const auto reference = raceline_.Sample(
     projection.s_m, config_.mppi.horizon, config_.mppi.dt_s);
   auto solution = optimizer_.Solve(
-    initial, reference, previous_control, shift_fraction, reset);
+    initial, reference, previous_control, projection.s_m, shift_fraction, reset,
+    num_visualization_rollouts);
 
   PlannedTrajectory result;
   result.solution_pose_time_ns = observation.pose_time_ns;
@@ -91,27 +120,35 @@ PlannedTrajectory MppiController::PlanLatest() {
   result.controls = std::move(solution.controls);
   result.diagnostics = solution.diagnostics;
   result.projection = projection;
+  result.frame = config_.mppi.frame;
   result.states.reserve(config_.mppi.horizon);
   for (std::size_t i = 0; i < config_.mppi.horizon; ++i) {
-    const auto point = raceline_.ToCartesian(
-      solution.states[i][kPathEvolution], solution.states[i][kLateralDeviation]);
+    const auto point = StateToEnu(raceline_, solution.states[i], config_.mppi.frame);
     result.states.push_back(CartesianTrajectoryState{point.first, point.second});
   }
+  result.sampled_rollouts = std::move(solution.sampled_rollouts);
 
+  if (!result.controls.empty()) {
+    last_applied_control_ = result.controls.front();
+  }
   previous_pose_time_ns_ = observation.pose_time_ns;
   reset_next_ = false;
   return result;
 }
 
-PlannedTrajectory MppiController::Plan(const VehicleObservation & observation) {
+PlannedTrajectory MppiController::Plan(
+  const VehicleObservation & observation,
+  const std::uint32_t num_visualization_rollouts)
+{
   (void)UpdateObservation(observation);
-  return PlanLatest();
+  return PlanLatest(num_visualization_rollouts);
 }
 
 void MppiController::Reset() noexcept {
   projector_.Reset();
   latest_.reset();
   previous_pose_time_ns_.reset();
+  last_applied_control_ = Control{};
   reset_next_ = true;
 }
 

@@ -43,7 +43,8 @@ int main(int argc, char ** argv) {
     const xxcar::mppi::Control previous = reference.controls.front();
 
     for (std::size_t i = 0; i < 20U; ++i) {
-      (void)controller.Solve(initial, reference, previous, 0.1F, i == 0U);
+      (void)controller.Solve(
+        initial, reference, previous, reference.s_grid.front(), 0.1F, i == 0U);
     }
     std::vector<float> gpu_times;
     gpu_times.reserve(iterations);
@@ -51,7 +52,8 @@ int main(int argc, char ** argv) {
     std::uint32_t minimum_finite = config.num_samples;
     const auto wall_start = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < iterations; ++i) {
-      const auto solution = controller.Solve(initial, reference, previous, 0.1F, false);
+      const auto solution = controller.Solve(
+        initial, reference, previous, reference.s_grid.front(), 0.1F, false);
       gpu_times.push_back(solution.diagnostics.solve_time_ms);
       minimum_ess = std::min(minimum_ess, solution.diagnostics.effective_sample_size);
       minimum_finite = std::min(minimum_finite, solution.diagnostics.finite_rollouts);

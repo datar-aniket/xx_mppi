@@ -33,8 +33,13 @@ class DynamicBicycleFiala {
 
     const float yaw_rate = state[kYawRate];
     const float speed_input = state[kSpeed];
-    const float speed = fmaxf(speed_input, 1.0e-3F);
-    const float sideslip = speed_input > 1.0e-3F ? state[kSideslip] : 0.0F;
+    // The Fiala slip-angle and beta-rate equations are singular around zero
+    // speed. Preserve direction while applying the requested 1 m/s model
+    // floor: (0, 1) -> +1 and (-1, 0) -> -1. Positive zero selects +1;
+    // negative zero selects -1. The actual state is not overwritten.
+    const float speed = copysignf(
+      fmaxf(fabsf(speed_input), minimum_longitudinal_speed), speed_input);
+    const float sideslip = fabsf(speed_input) > 1.0e-3F ? state[kSideslip] : 0.0F;
     const float wheel_speed = state[kDrivenWheelSpeed];
     const float steering = control[kSteering];
     const float torque = control[kWheelTorque];
@@ -47,25 +52,29 @@ class DynamicBicycleFiala {
     const float sin_delta_minus_beta = sinf(steering - sideslip);
     const float longitudinal_speed = speed * cos_beta;
     const float lateral_speed = speed * sin_beta;
+    // Slip ANGLES need the floored speed, because atan2 against a near-zero
+    // longitudinal speed is ill-conditioned. Slip RATIOS must not use it: the
+    // floor would make a stationary car with stationary wheels read as locked
+    // wheels rolling at the floor speed, which is a full braking force at
+    // standstill. Their denominators carry the floor on their own.
+    const float true_longitudinal_speed = speed_input * cos_beta;
     const float front_slip_angle =
       atan2f(lateral_speed + a * yaw_rate, longitudinal_speed) - steering;
     const float rear_slip_angle =
       atan2f(lateral_speed - b * yaw_rate, longitudinal_speed);
-    const float rear_slip_denominator = longitudinal_speed >= 0.0F ?
-      fmaxf(longitudinal_speed, minimum_longitudinal_speed) :
-      fminf(longitudinal_speed, -minimum_longitudinal_speed);
+    const float rear_slip_denominator = fmaxf(
+      fabsf(true_longitudinal_speed), minimum_longitudinal_speed);
     const float rear_slip_ratio =
-      (wheel_speed - longitudinal_speed) / rear_slip_denominator;
+      (wheel_speed - true_longitudinal_speed) / rear_slip_denominator;
 
     // A locked TRX-4 driveline constrains all wheels to one effective angular
     // speed. Resolve the front contact-patch velocity into the steered wheel
     // frame before forming its longitudinal slip ratio.
     const float front_lateral_speed = lateral_speed + a * yaw_rate;
     const float front_longitudinal_speed =
-      cos_delta * longitudinal_speed + sin_delta * front_lateral_speed;
-    const float front_slip_denominator = front_longitudinal_speed >= 0.0F ?
-      fmaxf(front_longitudinal_speed, minimum_longitudinal_speed) :
-      fminf(front_longitudinal_speed, -minimum_longitudinal_speed);
+      cos_delta * true_longitudinal_speed + sin_delta * front_lateral_speed;
+    const float front_slip_denominator = fmaxf(
+      fabsf(front_longitudinal_speed), minimum_longitudinal_speed);
     const float front_slip_ratio =
       (wheel_speed - front_longitudinal_speed) / front_slip_denominator;
 
@@ -76,7 +85,7 @@ class DynamicBicycleFiala {
     const float front_brake_torque = parameters_.front_brake_bias * negative_torque;
     const float rear_torque = fmaxf(torque, 0.0F) +
       (1.0F - parameters_.front_brake_bias) * negative_torque;
-    const float low_speed_fade = clampf(longitudinal_speed / 2.0F, 0.0F, 1.0F);
+    const float low_speed_fade = clampf(true_longitudinal_speed / 2.0F, 0.0F, 1.0F);
     const float requested_front_force =
       front_brake_torque / fmaxf(parameters_.wheel_radius_m, 1.0e-6F) * low_speed_fade;
 

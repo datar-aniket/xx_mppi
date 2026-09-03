@@ -38,9 +38,26 @@ struct PlannedTrajectory {
   float dt_s{};
   std::vector<CartesianTrajectoryState> states;  // T, terminal x[T] omitted
   std::vector<Control> controls;                 // T
+  std::vector<WeightedRollout> sampled_rollouts;  // optional, highest weight first
   MppiDiagnostics diagnostics{};
   Projection projection{};
+  // Frame the rollout states in sampled_rollouts are expressed in.
+  FrameKind frame{FrameKind::kFrenet};
 };
+
+// The sideslip both the Frenet projection and the body model use.
+//
+// EkfState reports side_slip_rad as atan2(v_y, v_x) of the body twist, so a
+// disagreement between the reported heading and the reported velocity shows up
+// here at full size. Left unbounded it rotates the projection's relative course
+// heading past +/-90 degrees, which makes s_dot = V cos(dphi) negative: the
+// planned path then retreats along the track before turning around. Bounding it
+// once, here, keeps the geometry and the small-angle bicycle model consistent.
+//
+// A non-finite estimate becomes zero only below 0.3 m/s; while moving it is
+// passed through so the caller's finite check rejects the sample.
+[[nodiscard]] float ConditionedSideslip(
+  float measured_sideslip_rad, float speed_mps, float maximum_rad) noexcept;
 
 class MppiController {
  public:
@@ -49,8 +66,11 @@ class MppiController {
   // Call for every incoming state message, even if optimization is throttled
   // to solve_rate_hz. This keeps the loop-continuous s hint current.
   [[nodiscard]] Projection UpdateObservation(const VehicleObservation & observation);
-  [[nodiscard]] PlannedTrajectory PlanLatest();
-  [[nodiscard]] PlannedTrajectory Plan(const VehicleObservation & observation);
+  [[nodiscard]] PlannedTrajectory PlanLatest(
+    std::uint32_t num_visualization_rollouts = 0U);
+  [[nodiscard]] PlannedTrajectory Plan(
+    const VehicleObservation & observation,
+    std::uint32_t num_visualization_rollouts = 0U);
   void Reset() noexcept;
 
   [[nodiscard]] const ControllerConfig & config() const noexcept { return config_; }
@@ -63,12 +83,15 @@ class MppiController {
     Projection projection;
   };
 
+  [[nodiscard]] Control PreviousControl(const VehicleObservation & observation) const;
+
   ControllerConfig config_;
   Raceline raceline_;
   ContinuousProjector projector_;
   CudaMppiController optimizer_;
   std::optional<PreparedObservation> latest_;
   std::optional<std::int64_t> previous_pose_time_ns_;
+  Control last_applied_control_{};
   bool reset_next_{true};
 };
 

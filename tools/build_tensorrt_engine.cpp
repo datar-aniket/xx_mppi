@@ -1,4 +1,5 @@
 #include <NvInfer.h>
+#include <NvInferVersion.h>
 #include <NvOnnxParser.h>
 
 #include <cstdint>
@@ -49,10 +50,15 @@ int main(int argc, char ** argv) {
     if (!builder) {
       throw std::runtime_error("createInferBuilder failed");
     }
-    const std::uint32_t explicit_batch =
+#if NV_TENSORRT_MAJOR >= 10
+    // Explicit batch is always enabled in TensorRT 10; the old flag is deprecated.
+    constexpr std::uint32_t network_flags = 0U;
+#else
+    const std::uint32_t network_flags =
       1U << static_cast<std::uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+#endif
     std::unique_ptr<nvinfer1::INetworkDefinition> network(
-      builder->createNetworkV2(explicit_batch));
+      builder->createNetworkV2(network_flags));
     std::unique_ptr<nvonnxparser::IParser> parser(
       nvonnxparser::createParser(*network, logger));
     std::unique_ptr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
@@ -70,8 +76,10 @@ int main(int argc, char ** argv) {
       throw std::runtime_error("model_input must have shape [batch,6]");
     }
 
-    std::unique_ptr<nvinfer1::IOptimizationProfile> profile(
-      builder->createOptimizationProfile());
+    // TensorRT retains ownership of optimization profiles created by the builder.
+    // In TensorRT 10 the profile destructor is protected, so this must remain a
+    // non-owning pointer rather than being wrapped in std::unique_ptr.
+    nvinfer1::IOptimizationProfile * const profile = builder->createOptimizationProfile();
     if (!profile ||
       !profile->setDimensions(
         kInputName, nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims2{1, 6}) ||
@@ -84,7 +92,9 @@ int main(int argc, char ** argv) {
     {
       throw std::runtime_error("failed to configure TensorRT batch profile");
     }
-    config->addOptimizationProfile(profile.release());
+    if (config->addOptimizationProfile(profile) < 0) {
+      throw std::runtime_error("TensorRT rejected the batch profile");
+    }
     config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1ULL << 30U);
     if (builder->platformHasFastFp16()) {
       config->setFlag(nvinfer1::BuilderFlag::kFP16);
