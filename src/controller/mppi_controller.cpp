@@ -24,10 +24,14 @@ MppiController::MppiController(ControllerConfig config, Raceline raceline)
   raceline_(std::move(raceline)),
   projector_(raceline_, config_.projection_window_m),
   optimizer_(
-    config_.mppi, config_.costs, config_.vehicle, config_.model_kind,
+    config_.mppi, config_.costs, config_.vehicle, config_.obstacles, config_.model_kind,
     raceline_, config_.integrator, config_.neural_model_path,
     config_.projection_window_m)
 {
+}
+
+void MppiController::UpdateObstacleField(const ObstacleField & field) {
+  optimizer_.UpdateObstacleField(field);
 }
 
 // Warm-start reference for control smoothness/rate costs. EkfState provides

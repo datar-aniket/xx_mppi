@@ -75,6 +75,7 @@ class MppiController {
   // the fallback feedback aligned with what left the controller, not merely
   // with the newest (possibly downsampled) solve.
   void RecordPublishedControl(const Control & control) noexcept;
+  void UpdateObstacleField(const ObstacleField & field);
   void Reset() noexcept;
 
   [[nodiscard]] const ControllerConfig & config() const noexcept { return config_; }

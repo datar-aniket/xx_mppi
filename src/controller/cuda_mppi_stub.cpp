@@ -18,7 +18,7 @@ class CudaMppiController::Impl {
 };
 
 CudaMppiController::CudaMppiController(
-  MppiConfig config, CostWeights, VehicleParameters, ModelKind, const Raceline &,
+  MppiConfig config, CostWeights, VehicleParameters, ObstacleConfig, ModelKind, const Raceline &,
   IntegratorKind, std::string, float)
 : impl_(std::make_unique<Impl>(std::move(config))) {}
 
@@ -35,5 +35,6 @@ MppiSolution CudaMppiController::Solve(
 
 const MppiConfig & CudaMppiController::config() const noexcept { return impl_->config_; }
 bool CudaMppiController::using_cuda() const noexcept { return false; }
+void CudaMppiController::UpdateObstacleField(const ObstacleField &) {}
 
 }  // namespace xxcar::mppi

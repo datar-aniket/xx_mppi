@@ -15,7 +15,7 @@ class CudaMppiController {
  public:
   CudaMppiController(
     MppiConfig config, CostWeights costs, VehicleParameters vehicle,
-    ModelKind model_kind, const Raceline & raceline,
+    ObstacleConfig obstacle_config, ModelKind model_kind, const Raceline & raceline,
     IntegratorKind integrator_kind = IntegratorKind::kEuler,
     std::string neural_engine_path = {},
     float projection_window_m = 30.0F);
@@ -35,6 +35,7 @@ class CudaMppiController {
     const State & initial_state, const ReferenceHorizon & reference,
     const Control & previous_control, float initial_path_s_m, float shift_fraction,
     bool reset, std::uint32_t num_visualization_rollouts = 0U);
+  void UpdateObstacleField(const ObstacleField & field);
 
   [[nodiscard]] const MppiConfig & config() const noexcept;
   [[nodiscard]] bool using_cuda() const noexcept;

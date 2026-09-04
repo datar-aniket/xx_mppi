@@ -48,6 +48,16 @@ struct DeviceTrack {
   std::uint32_t search_span;
 };
 
+struct DeviceObstacleField {
+  const float * signed_distance;
+  float origin_east;
+  float origin_north;
+  float resolution;
+  std::uint32_t width;
+  std::uint32_t height;
+  bool valid;
+};
+
 // Frenet quantities the cost function needs. In the Frenet frame they are read
 // straight out of the state; in the Cartesian frame they come from projecting
 // the ENU state onto the raceline.
@@ -89,6 +99,15 @@ struct DeviceCosts {
   float lateral_decay_rate;
   float wheel_slip;
   float wheel_slip_band;
+  float obstacle_distance;
+  float obstacle_influence_distance;
+  float obstacle_latch_threshold;
+  float obstacle_latching;
+  float obstacle_maximum_distance;
+  float footprint_length;
+  float footprint_width;
+  std::uint16_t footprint_circles;
+  bool obstacle_enabled;
 };
 
 struct DeviceMppi {
@@ -159,6 +178,79 @@ __device__ float InterpolateAngleDevice(const float a, const float b, const floa
   return atan2f(
     a == b ? sinf(a) : sinf(a) + t * (sinf(b) - sinf(a)),
     a == b ? cosf(a) : cosf(a) + t * (cosf(b) - cosf(a)));
+}
+
+__device__ float SampleObstacleField(
+  const DeviceObstacleField & field, const float east, const float north,
+  const float outside_value)
+{
+  if (!field.valid) {
+    return outside_value;
+  }
+  const float grid_x = (east - field.origin_east) / field.resolution - 0.5F;
+  const float grid_y = (north - field.origin_north) / field.resolution - 0.5F;
+  if (grid_x < 0.0F || grid_y < 0.0F ||
+    grid_x >= static_cast<float>(field.width - 1U) ||
+    grid_y >= static_cast<float>(field.height - 1U))
+  {
+    return outside_value;
+  }
+  const auto x0 = static_cast<std::uint32_t>(floorf(grid_x));
+  const auto y0 = static_cast<std::uint32_t>(floorf(grid_y));
+  const float tx = grid_x - static_cast<float>(x0);
+  const float ty = grid_y - static_cast<float>(y0);
+  const std::size_t row0 = static_cast<std::size_t>(y0) * field.width;
+  const std::size_t row1 = static_cast<std::size_t>(y0 + 1U) * field.width;
+  const float lower = field.signed_distance[row0 + x0] + tx *
+    (field.signed_distance[row0 + x0 + 1U] - field.signed_distance[row0 + x0]);
+  const float upper = field.signed_distance[row1 + x0] + tx *
+    (field.signed_distance[row1 + x0 + 1U] - field.signed_distance[row1 + x0]);
+  return lower + ty * (upper - lower);
+}
+
+__device__ float VehicleObstacleClearance(
+  const State & state, const FrenetView & frenet, const DeviceTrack & track,
+  const DeviceObstacleField & field, const DeviceMppi & config,
+  const DeviceCosts & weights)
+{
+  if (!weights.obstacle_enabled || !field.valid) {
+    return weights.obstacle_maximum_distance;
+  }
+  float center_east = state[kEastM];
+  float center_north = state[kNorthM];
+  float yaw = state[kHeadingEnu];
+  if (config.frame == FrameKind::kFrenet) {
+    const float wrapped_s = WrapTrackS(frenet.path_evolution, track);
+    const std::uint32_t low = LocateTrackSegment(wrapped_s, track);
+    const std::uint32_t high = low + 1U;
+    const float fraction = (wrapped_s - track.s[low]) /
+      fmaxf(track.s[high] - track.s[low], 1.0e-9F);
+    const float track_heading = InterpolateAngleDevice(
+      track.heading[low], track.heading[high], fraction);
+    center_east = track.east[low] + fraction *
+      (track.east[high] - track.east[low]) -
+      frenet.lateral_deviation * cosf(track_heading);
+    center_north = track.north[low] + fraction *
+      (track.north[high] - track.north[low]) -
+      frenet.lateral_deviation * sinf(track_heading);
+    yaw = track_heading + frenet.relative_course - state[kSideslip] +
+      0.5F * CUDART_PI_F;
+  }
+  const float segment_length = weights.footprint_length /
+    static_cast<float>(weights.footprint_circles);
+  const float radius = sqrtf(
+    0.25F * segment_length * segment_length +
+    0.25F * weights.footprint_width * weights.footprint_width);
+  float clearance = CUDART_INF_F;
+  for (std::uint16_t i = 0; i < weights.footprint_circles; ++i) {
+    const float offset = -0.5F * weights.footprint_length +
+      (static_cast<float>(i) + 0.5F) * segment_length;
+    const float distance = SampleObstacleField(
+      field, center_east + offset * cosf(yaw), center_north + offset * sinf(yaw),
+      weights.obstacle_maximum_distance) - radius;
+    clearance = fminf(clearance, distance);
+  }
+  return clearance;
 }
 
 // Device twin of Raceline::Project restricted to a window of segments around
@@ -314,8 +406,10 @@ __device__ State IntegrateAnalyticStep(
 // whole population and remove all boundary discrimination from the solve.
 __device__ float StateCost(
   const State & state, const FrenetView & frenet, const State & desired,
-  const DeviceReference & reference, const DeviceCosts & weights, bool & crashed,
-  bool & excessive_sideslip, const float crash_discount, const bool latch_violations)
+  const DeviceTrack & track, const DeviceReference & reference,
+  const DeviceObstacleField & obstacle_field, const DeviceMppi & config,
+  const DeviceCosts & weights, bool & crashed, bool & excessive_sideslip,
+  bool & obstacle_latched, const float crash_discount, const bool latch_violations)
 {
   float cost = 0.0F;
   for (std::size_t i = 0; i < kBodyStateDim; ++i) {
@@ -361,6 +455,17 @@ __device__ float StateCost(
     (latch_violations && fabsf(beta) > weights.maximum_sideslip);
   if (excessive_sideslip) {
     cost += weights.sideslip_kill / static_cast<float>(reference.horizon + 1U);
+  }
+  if (weights.obstacle_enabled && obstacle_field.valid) {
+    const float clearance = VehicleObstacleClearance(
+      state, frenet, track, obstacle_field, config, weights);
+    const float deficit = fmaxf(weights.obstacle_influence_distance - clearance, 0.0F);
+    cost += weights.obstacle_distance * deficit * deficit;
+    obstacle_latched = obstacle_latched ||
+      (latch_violations && clearance < weights.obstacle_latch_threshold);
+    if (obstacle_latched) {
+      cost += weights.obstacle_latching / static_cast<float>(reference.horizon + 1U);
+    }
   }
   const float lateral_rate = state[kSpeed] * sinf(frenet.relative_course);
   const float damping =
@@ -456,6 +561,7 @@ __global__ void RolloutAndCost(
   const State initial_state, const float initial_path_s, const Control previous_control,
   const Control * nominal, const Control * candidates, State * trajectories, float * costs,
   const DeviceTrack track, const DeviceReference reference,
+  const DeviceObstacleField obstacle_field,
   const DeviceMppi config, const DeviceCosts weights,
   const VehicleParameters parameters)
 {
@@ -472,12 +578,14 @@ __global__ void RolloutAndCost(
   float cost = 0.0F;
   bool crashed = false;
   bool excessive_sideslip = false;
+  bool obstacle_latched = false;
   float discount = 1.0F;
   Control prior = previous_control;
   for (std::uint16_t t = 0; t < config.horizon; ++t) {
     cost += StateCost(
-      state, frenet, reference.states[t], reference, weights, crashed,
-      excessive_sideslip, discount, t != 0U);
+      state, frenet, reference.states[t], track, reference, obstacle_field,
+      config, weights, crashed, excessive_sideslip, obstacle_latched,
+      discount, t != 0U);
     discount *= weights.crash_discount;
     const Control control = candidates[control_base + t];
     for (std::size_t channel = 0; channel < kControlDim; ++channel) {
@@ -507,8 +615,9 @@ __global__ void RolloutAndCost(
     trajectories[state_base + t + 1U] = state;
   }
   cost += StateCost(
-    state, frenet, reference.states[config.horizon], reference, weights, crashed,
-    excessive_sideslip, discount, true);
+    state, frenet, reference.states[config.horizon], track, reference,
+    obstacle_field, config, weights, crashed, excessive_sideslip,
+    obstacle_latched, discount, true);
   cost -= weights.progress * (frenet.path_evolution - initial_path_s);
   costs[sample] = isfinite(cost) ? cost : CUDART_INF_F;
 }
@@ -516,7 +625,8 @@ __global__ void RolloutAndCost(
 __global__ void InitializeNeuralRollouts(
   const State initial_state, const float initial_path_s, State * current_states,
   State * trajectories, float * costs, std::uint8_t * crashed,
-  std::uint8_t * excessive_sideslip, float * path_s_hint, const DeviceMppi config)
+  std::uint8_t * excessive_sideslip, std::uint8_t * obstacle_latched,
+  float * path_s_hint, const DeviceMppi config)
 {
   const std::uint32_t sample = blockIdx.x * blockDim.x + threadIdx.x;
   if (sample >= config.samples) {
@@ -528,15 +638,18 @@ __global__ void InitializeNeuralRollouts(
   costs[sample] = 0.0F;
   crashed[sample] = 0U;
   excessive_sideslip[sample] = 0U;
+  obstacle_latched[sample] = 0U;
 }
 
 __global__ void NeuralStageCostAndPack(
   const State initial_state, const Control previous_control,
   const State * current_states, const Control * nominal, const Control * candidates,
   float * model_input, float * costs, std::uint8_t * crashed,
-  std::uint8_t * excessive_sideslip, float * path_s_hint,
+  std::uint8_t * excessive_sideslip, std::uint8_t * obstacle_latched,
+  float * path_s_hint,
   const std::uint16_t time_index, const DeviceTrack track,
-  const DeviceReference reference, const DeviceMppi config, const DeviceCosts weights)
+  const DeviceReference reference, const DeviceObstacleField obstacle_field,
+  const DeviceMppi config, const DeviceCosts weights)
 {
   const std::uint32_t sample = blockIdx.x * blockDim.x + threadIdx.x;
   if (sample >= config.samples) {
@@ -545,12 +658,14 @@ __global__ void NeuralStageCostAndPack(
   const State state = current_states[sample];
   bool crash_latch = crashed[sample] != 0U;
   bool sideslip_latch = excessive_sideslip[sample] != 0U;
+  bool obstacle_latch = obstacle_latched[sample] != 0U;
   const float discount = powf(weights.crash_discount, static_cast<float>(time_index));
   const FrenetView frenet = FrameView(state, path_s_hint[sample], track, config);
   path_s_hint[sample] = frenet.path_evolution;
   float cost = StateCost(
-    state, frenet, reference.states[time_index], reference, weights,
-    crash_latch, sideslip_latch, discount, time_index != 0U);
+    state, frenet, reference.states[time_index], track, reference,
+    obstacle_field, config, weights, crash_latch, sideslip_latch,
+    obstacle_latch, discount, time_index != 0U);
   const std::size_t control_offset =
     static_cast<std::size_t>(sample) * config.horizon + time_index;
   const Control control = candidates[control_offset];
@@ -574,6 +689,7 @@ __global__ void NeuralStageCostAndPack(
   costs[sample] += cost;
   crashed[sample] = crash_latch ? 1U : 0U;
   excessive_sideslip[sample] = sideslip_latch ? 1U : 0U;
+  obstacle_latched[sample] = obstacle_latch ? 1U : 0U;
 
   const std::size_t input_offset = static_cast<std::size_t>(sample) * 6U;
   for (std::size_t channel = 0; channel < kBodyStateDim; ++channel) {
@@ -641,8 +757,10 @@ __global__ void NeuralIntegrateAndStore(
 __global__ void FinalizeNeuralCosts(
   const float initial_path_s, const State * current_states, float * costs,
   const std::uint8_t * crashed, const std::uint8_t * excessive_sideslip,
-  const float * path_s_hint, const DeviceTrack track,
-  const DeviceReference reference, const DeviceMppi config, const DeviceCosts weights)
+  const std::uint8_t * obstacle_latched, const float * path_s_hint,
+  const DeviceTrack track, const DeviceReference reference,
+  const DeviceObstacleField obstacle_field, const DeviceMppi config,
+  const DeviceCosts weights)
 {
   const std::uint32_t sample = blockIdx.x * blockDim.x + threadIdx.x;
   if (sample >= config.samples) {
@@ -651,11 +769,13 @@ __global__ void FinalizeNeuralCosts(
   const State state = current_states[sample];
   bool crash_latch = crashed[sample] != 0U;
   bool sideslip_latch = excessive_sideslip[sample] != 0U;
+  bool obstacle_latch = obstacle_latched[sample] != 0U;
   const float discount = powf(weights.crash_discount, static_cast<float>(config.horizon));
   const FrenetView frenet = FrameView(state, path_s_hint[sample], track, config);
   float total = costs[sample] + StateCost(
-    state, frenet, reference.states[config.horizon], reference, weights,
-    crash_latch, sideslip_latch, discount, true);
+    state, frenet, reference.states[config.horizon], track, reference,
+    obstacle_field, config, weights, crash_latch, sideslip_latch,
+    obstacle_latch, discount, true);
   total -= weights.progress * (frenet.path_evolution - initial_path_s);
   costs[sample] = isfinite(total) ? total : CUDART_INF_F;
 }
@@ -842,7 +962,9 @@ void Free(T *& pointer) noexcept {
   }
 }
 
-DeviceCosts ToDeviceCosts(const CostWeights & source) {
+DeviceCosts ToDeviceCosts(
+  const CostWeights & source, const ObstacleConfig & obstacles)
+{
   DeviceCosts result{};
   for (std::size_t i = 0; i < kStateDim; ++i) {
     result.reference_tracking[i] = source.reference_tracking[i];
@@ -869,6 +991,15 @@ DeviceCosts ToDeviceCosts(const CostWeights & source) {
   result.lateral_decay_rate = source.lateral_decay_rate;
   result.wheel_slip = source.wheel_slip;
   result.wheel_slip_band = source.wheel_slip_band;
+  result.obstacle_distance = obstacles.distance_weight;
+  result.obstacle_influence_distance = obstacles.influence_distance_m;
+  result.obstacle_latch_threshold = obstacles.latch_threshold_m;
+  result.obstacle_latching = obstacles.latching_weight;
+  result.obstacle_maximum_distance = obstacles.maximum_distance_m;
+  result.footprint_length = obstacles.footprint_length_m;
+  result.footprint_width = obstacles.footprint_width_m;
+  result.footprint_circles = obstacles.footprint_circles;
+  result.obstacle_enabled = obstacles.enabled;
   return result;
 }
 
@@ -878,10 +1009,12 @@ class CudaMppiController::Impl {
  public:
   Impl(
     MppiConfig config, const CostWeights & costs, VehicleParameters vehicle,
+    ObstacleConfig obstacle_config,
     const ModelKind model_kind, const Raceline & raceline,
     const IntegratorKind integrator_kind, std::string neural_engine_path,
     const float cartesian_projection_window_m)
-  : config_(std::move(config)), vehicle_(vehicle), costs_(ToDeviceCosts(costs)),
+  : config_(std::move(config)), vehicle_(vehicle), obstacle_config_(obstacle_config),
+    costs_(ToDeviceCosts(costs, obstacle_config)),
     base_sigma_(config_.sigma)
   {
     if (!(cartesian_projection_window_m > 0.0F)) {
@@ -972,6 +1105,7 @@ class CudaMppiController::Impl {
       Allocate(neural_derivative_, samples * TensorRtDerivativeModel::kOutputWidth);
       Allocate(crash_latches_, samples);
       Allocate(sideslip_latches_, samples);
+      Allocate(obstacle_latches_, samples);
       Allocate(neural_s_hint_, samples);
     }
 
@@ -1024,6 +1158,19 @@ class CudaMppiController::Impl {
       raceline.length(), raceline.closed(),
       std::min(span, static_cast<std::uint32_t>(point_count))};
 
+    if (obstacle_config_.enabled) {
+      obstacle_width_ = static_cast<std::uint32_t>(std::ceil(
+          obstacle_config_.grid_width_m / obstacle_config_.grid_resolution_m));
+      obstacle_height_ = static_cast<std::uint32_t>(std::ceil(
+          obstacle_config_.grid_height_m / obstacle_config_.grid_resolution_m));
+      const std::size_t obstacle_cells =
+        static_cast<std::size_t>(obstacle_width_) * obstacle_height_;
+      Allocate(obstacle_distance_, obstacle_cells);
+      CheckCuda(cudaMallocHost(
+          reinterpret_cast<void **>(&obstacle_staging_), obstacle_cells * sizeof(float)),
+        "allocate pinned obstacle staging");
+    }
+
     std::size_t min_bytes = 0;
     std::size_t max_bytes = 0;
     std::size_t sum_bytes = 0;
@@ -1068,6 +1215,10 @@ class CudaMppiController::Impl {
     Free(track_east_);
     Free(track_north_);
     Free(track_heading_);
+    Free(obstacle_distance_);
+    if (obstacle_staging_ != nullptr) {
+      cudaFreeHost(obstacle_staging_);
+    }
     Free(minimum_);
     Free(worst_);
     Free(sum_);
@@ -1081,6 +1232,7 @@ class CudaMppiController::Impl {
     Free(neural_derivative_);
     Free(crash_latches_);
     Free(sideslip_latches_);
+    Free(obstacle_latches_);
     Free(neural_s_hint_);
     if (reduction_temp_ != nullptr) {
       cudaFree(reduction_temp_);
@@ -1154,7 +1306,8 @@ class CudaMppiController::Impl {
     if (device_config_.model_kind == ModelKind::kTensorRtNeuralDerivative) {
       InitializeNeuralRollouts<<<sample_blocks, 256, 0, stream_>>>(
         initial_state, initial_path_s_m, neural_states_, trajectories_, costs_device_,
-        crash_latches_, sideslip_latches_, neural_s_hint_, device_config_);
+        crash_latches_, sideslip_latches_, obstacle_latches_, neural_s_hint_,
+        device_config_);
       const std::uint16_t substeps = device_config_.substeps == 0U ? 1U :
         device_config_.substeps;
       const float step_dt = device_config_.dt / static_cast<float>(substeps);
@@ -1162,7 +1315,8 @@ class CudaMppiController::Impl {
         NeuralStageCostAndPack<<<sample_blocks, 256, 0, stream_>>>(
           initial_state, previous_control, neural_states_, nominal_, candidates_,
           neural_input_, costs_device_, crash_latches_, sideslip_latches_,
-          neural_s_hint_, t, track_, device_reference, device_config_, costs_);
+          obstacle_latches_, neural_s_hint_, t, track_, device_reference,
+          obstacle_field_, device_config_, costs_);
         for (std::uint16_t substep = 0; substep < substeps; ++substep) {
           if (substep != 0U) {
             PackNeuralInputs<<<sample_blocks, 256, 0, stream_>>>(
@@ -1178,13 +1332,13 @@ class CudaMppiController::Impl {
       }
       FinalizeNeuralCosts<<<sample_blocks, 256, 0, stream_>>>(
         initial_path_s_m, neural_states_, costs_device_, crash_latches_,
-        sideslip_latches_, neural_s_hint_, track_, device_reference, device_config_,
-        costs_);
+        sideslip_latches_, obstacle_latches_, neural_s_hint_, track_,
+        device_reference, obstacle_field_, device_config_, costs_);
     } else {
       RolloutAndCost<<<sample_blocks, 256, 0, stream_>>>(
         initial_state, initial_path_s_m, previous_control, nominal_, candidates_,
-        trajectories_, costs_device_, track_, device_reference, device_config_,
-        costs_, vehicle_);
+        trajectories_, costs_device_, track_, device_reference, obstacle_field_,
+        device_config_, costs_, vehicle_);
     }
     PrepareReductionInputs<<<sample_blocks, 256, 0, stream_>>>(
       costs_device_, reduction_a_, reduction_b_, finite_flags_, config_.num_samples);
@@ -1316,11 +1470,36 @@ class CudaMppiController::Impl {
     return solution;
   }
 
+  void UpdateObstacleField(const ObstacleField & field) {
+    if (!obstacle_config_.enabled) {
+      return;
+    }
+    if (!field.valid() || field.width != obstacle_width_ ||
+      field.height != obstacle_height_ ||
+      std::abs(field.resolution_m - obstacle_config_.grid_resolution_m) > 1.0e-6F)
+    {
+      throw std::invalid_argument("obstacle field does not match configured CUDA grid");
+    }
+    // The pinned staging buffer and device field share the solver stream. Wait
+    // only when a new scan replaces them, never in the control solve itself.
+    CheckCuda(cudaStreamSynchronize(stream_), "wait before obstacle staging update");
+    std::copy(
+      field.signed_distance_m.begin(), field.signed_distance_m.end(), obstacle_staging_);
+    CheckCuda(cudaMemcpyAsync(
+      obstacle_distance_, obstacle_staging_,
+      field.signed_distance_m.size() * sizeof(float), cudaMemcpyHostToDevice, stream_),
+      "copy obstacle signed distance field");
+    obstacle_field_ = DeviceObstacleField{
+      obstacle_distance_, field.origin_east_m, field.origin_north_m,
+      field.resolution_m, field.width, field.height, true};
+  }
+
   const MppiConfig & config() const noexcept { return config_; }
 
  private:
   MppiConfig config_;
   VehicleParameters vehicle_;
+  ObstacleConfig obstacle_config_;
   DeviceCosts costs_{};
   DeviceMppi device_config_{};
   std::array<float, kControlDim> base_sigma_{};
@@ -1351,6 +1530,11 @@ class CudaMppiController::Impl {
   float * track_north_{nullptr};
   float * track_heading_{nullptr};
   DeviceTrack track_{};
+  float * obstacle_distance_{nullptr};
+  float * obstacle_staging_{nullptr};
+  std::uint32_t obstacle_width_{};
+  std::uint32_t obstacle_height_{};
+  DeviceObstacleField obstacle_field_{};
   float * minimum_{nullptr};
   float * worst_{nullptr};
   float * sum_{nullptr};
@@ -1364,6 +1548,7 @@ class CudaMppiController::Impl {
   float * neural_derivative_{nullptr};
   std::uint8_t * crash_latches_{nullptr};
   std::uint8_t * sideslip_latches_{nullptr};
+  std::uint8_t * obstacle_latches_{nullptr};
   float * neural_s_hint_{nullptr};
   std::unique_ptr<TensorRtDerivativeModel> neural_model_;
   void * reduction_temp_{nullptr};
@@ -1372,11 +1557,12 @@ class CudaMppiController::Impl {
 
 CudaMppiController::CudaMppiController(
   MppiConfig config, CostWeights costs, VehicleParameters vehicle,
+  ObstacleConfig obstacle_config,
   const ModelKind model_kind, const Raceline & raceline,
   const IntegratorKind integrator_kind, std::string neural_engine_path,
   const float projection_window_m)
 : impl_(std::make_unique<Impl>(
-    std::move(config), costs, vehicle, model_kind, raceline,
+    std::move(config), costs, vehicle, obstacle_config, model_kind, raceline,
     integrator_kind, std::move(neural_engine_path), projection_window_m)) {}
 
 CudaMppiController::~CudaMppiController() = default;
@@ -1396,5 +1582,8 @@ MppiSolution CudaMppiController::Solve(
 
 const MppiConfig & CudaMppiController::config() const noexcept { return impl_->config(); }
 bool CudaMppiController::using_cuda() const noexcept { return true; }
+void CudaMppiController::UpdateObstacleField(const ObstacleField & field) {
+  impl_->UpdateObstacleField(field);
+}
 
 }  // namespace xxcar::mppi

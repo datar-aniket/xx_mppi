@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "xx_mppi/costs/map_boundary.hpp"
+#include "xx_mppi/costs/obstacle_cost.hpp"
 
 namespace xxcar::mppi {
 
@@ -39,7 +40,9 @@ float CostEvaluator::InterpolateByS(
 
 float CostEvaluator::Evaluate(
   const std::vector<State> & states, const std::vector<Control> & controls,
-  const ReferenceHorizon & reference, const Control & previous_control) const
+  const ReferenceHorizon & reference, const Control & previous_control,
+  const ObstacleField * const obstacle_field, const Raceline * const raceline,
+  const ObstacleConfig * const obstacle_config) const
 {
   if (states.size() != controls.size() + 1U ||
     reference.states.size() != states.size() || reference.controls.size() != controls.size())
@@ -50,6 +53,7 @@ float CostEvaluator::Evaluate(
   float cost = 0.0F;
   bool crashed = false;
   bool excessive_sideslip = false;
+  bool obstacle_latched = false;
   float discount = 1.0F;
   for (std::size_t t = 0; t < states.size(); ++t) {
     const auto & state = states[t];
@@ -92,6 +96,11 @@ float CostEvaluator::Evaluate(
       std::abs(sideslip) > weights_.maximum_sideslip_rad;
     if (excessive_sideslip) {
       cost += weights_.sideslip_kill / static_cast<float>(states.size());
+    }
+    if (obstacle_field != nullptr && raceline != nullptr && obstacle_config != nullptr) {
+      cost += EvaluateObstacleCost(
+        VehicleObstacleClearance(state, *raceline, *obstacle_field, *obstacle_config),
+        *obstacle_config, obstacle_latched, states.size());
     }
 
     const float lateral_error_rate = state[kSpeed] * std::sin(state[kRelativeHeading]);

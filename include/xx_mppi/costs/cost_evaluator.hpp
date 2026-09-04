@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "xx_mppi/reference/raceline.hpp"
 #include "xx_mppi/types.hpp"
 
 namespace xxcar::mppi {
@@ -12,7 +13,10 @@ class CostEvaluator {
 
   [[nodiscard]] float Evaluate(
     const std::vector<State> & states, const std::vector<Control> & controls,
-    const ReferenceHorizon & reference, const Control & previous_control) const;
+    const ReferenceHorizon & reference, const Control & previous_control,
+    const ObstacleField * obstacle_field = nullptr,
+    const Raceline * raceline = nullptr,
+    const ObstacleConfig * obstacle_config = nullptr) const;
 
   [[nodiscard]] const CostWeights & weights() const noexcept { return weights_; }
 

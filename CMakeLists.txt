@@ -27,6 +27,7 @@ add_library(xx_mppi_core SHARED
   src/controller/config.cpp
   src/controller/mppi_controller.cpp
   src/costs/cost_evaluator.cpp
+  src/costs/obstacle_cost.cpp
   src/dynamics/rollout.cpp
   src/obstacles/pose_history.cpp
   src/obstacles/signed_distance_field.cpp

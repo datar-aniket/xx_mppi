@@ -7,6 +7,7 @@
 #include "xx_mppi/costs/cost_evaluator.hpp"
 #include "xx_mppi/dynamics/analytic_dynamics.hpp"
 #include "xx_mppi/dynamics/rollout.hpp"
+#include "xx_mppi/obstacles/signed_distance_field.hpp"
 #include "xx_mppi/reference/raceline.hpp"
 
 namespace xxcar::mppi {
@@ -200,6 +201,34 @@ TEST(Costs, AddsAsymmetricAccelerationAndPhysicalControlRatePenalties) {
   // steering rate: .5*(1^2 + (-2)^2) = 2.5
   // torque rate: .25*(2^2 + (-1)^2) = 1.25
   EXPECT_NEAR(added, 38.75F, 1.0e-3F);
+}
+
+TEST(Costs, ObstacleDistanceAndLatchPenalizeBlockedTrajectory) {
+  const auto raceline = Raceline::LoadCsv(TestCsv());
+  const auto reference = raceline.Sample(0.0F, 5U, 0.1F);
+  ObstacleConfig obstacle_config;
+  obstacle_config.enabled = true;
+  obstacle_config.grid_resolution_m = 0.05F;
+  obstacle_config.grid_width_m = 4.0F;
+  obstacle_config.grid_height_m = 4.0F;
+  obstacle_config.obstacle_inflation_radius_m = 0.05F;
+  obstacle_config.distance_weight = 100.0F;
+  obstacle_config.influence_distance_m = 0.5F;
+  obstacle_config.latch_threshold_m = 0.1F;
+  obstacle_config.latching_weight = 1000.0F;
+  obstacle_config.footprint_length_m = 0.5F;
+  obstacle_config.footprint_width_m = 0.25F;
+  SignedDistanceFieldBuilder builder(obstacle_config);
+  const auto clear_field = builder.Build({}, {}, 1, 1);
+  const auto blocked_field = builder.Build({Point2D{0.0F, 0.0F}}, {}, 2, 2);
+  const CostEvaluator evaluator(CostWeights{}, 0.1F);
+  const float clear_cost = evaluator.Evaluate(
+    reference.states, reference.controls, reference, Control{},
+    &clear_field, &raceline, &obstacle_config);
+  const float blocked_cost = evaluator.Evaluate(
+    reference.states, reference.controls, reference, Control{},
+    &blocked_field, &raceline, &obstacle_config);
+  EXPECT_GT(blocked_cost, clear_cost + 500.0F);
 }
 
 }  // namespace

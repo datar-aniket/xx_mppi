@@ -36,7 +36,8 @@ int main(int argc, char ** argv) {
     xxcar::mppi::CostWeights costs;
     xxcar::mppi::VehicleParameters vehicle;
     xxcar::mppi::CudaMppiController controller(
-      config, costs, vehicle, xxcar::mppi::ModelKind::kDynamicBicycleFiala, raceline);
+      config, costs, vehicle, xxcar::mppi::ObstacleConfig{},
+      xxcar::mppi::ModelKind::kDynamicBicycleFiala, raceline);
     const auto reference = raceline.Sample(
       raceline.s_min(), config.horizon, config.dt_s);
     xxcar::mppi::State initial = reference.states.front();
