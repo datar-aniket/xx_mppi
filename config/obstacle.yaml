@@ -12,9 +12,9 @@ pose_history_s: 0.10
 maximum_extrapolation_s: 0.02
 
 distance_weight: 500.0
-influence_distance_m: 0.75
-latch_threshold_m: 0.10
-latching_weight: 60000.0
+influence_distance_m: 0.5
+latch_threshold_m: 0.1
+latching_weight: 50000.0
 
 # Traxxas TRX-4 Sport bounding box represented conservatively by three circles.
 footprint_length_m: 0.557

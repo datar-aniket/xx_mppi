@@ -10,10 +10,10 @@ vehicle:
   yaw_inertia_kgm2: 0.030
   cg_to_front_m: 0.13
   cg_to_rear_m: 0.13
-  front_cornering_stiffness_nprad: 200.0
-  rear_cornering_stiffness_nprad: 200.0
-  front_friction_coefficient: 0.65
-  rear_friction_coefficient: 0.65
+  front_cornering_stiffness_nprad: 100.0
+  rear_cornering_stiffness_nprad: 100.0
+  front_friction_coefficient: 0.5
+  rear_friction_coefficient: 0.5
   wheel_radius_m: 0.05842
   # Equivalent inertia seen at the tire for the rigidly coupled driveline.
   driven_wheel_inertia_kgm2: 0.02

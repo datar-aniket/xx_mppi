@@ -1,10 +1,10 @@
 # Jetson Orin NX target. K/T/dt are compile-independent runtime dimensions;
 # changing them reallocates persistent CUDA buffers but does not alter messages.
 num_samples: 1001
-horizon: 35
+horizon: 40
 dt: 0.1
 solve_rate_hz: 50.0
-control_publish_rate_hz: 25.0  # publish only the newest completed solution
+control_publish_rate_hz: 50.0  # publish only the newest completed solution
 maximum_solution_age_s: 0.1    # zero disables the stale-command guard
 info_log_rate_hz: 10.0          # terminal ROS info summary of latest command
 visualization_rate_hz: 20.0  # reduced-rate RViz publishing and rollout snapshots
@@ -32,7 +32,7 @@ direct_control_throttle_min: -50.0
 direct_control_throttle_max: 50.0
 # MPPI steering is positive-left. Set -1.0 when the actuator chain downstream of
 # cmd_vel is positive-right (PID_lanekeeping compensates with invert_steering).
-direct_control_steering_scale: -4.5
+direct_control_steering_scale: 2.0
 direct_control_steering_limit_rad: 1.0
 
 observation:
@@ -49,8 +49,8 @@ sigma:
 
 # Provisional torque bounds pending final vehicle characterization.
 control_bounds:
-  min: {steering_angle_rad: -0.4, wheel_torque_nm: -2.0}
-  max: {steering_angle_rad:  0.4, wheel_torque_nm: 1.5}
+  min: {steering_angle_rad: -0.35, wheel_torque_nm: -0.5}
+  max: {steering_angle_rad:  0.35, wheel_torque_nm: 0.5}
 
 noise_smoothing_window: 5
 control_delay_steps: 0
