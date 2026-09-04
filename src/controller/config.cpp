@@ -149,6 +149,9 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   const YAML::Node mppi_yaml = YAML::LoadFile((directory / "mppi.yaml").string());
   const YAML::Node model_yaml = YAML::LoadFile((directory / "model.yaml").string());
   const YAML::Node weights_yaml = YAML::LoadFile((directory / "weights.yaml").string());
+  const auto obstacle_path = directory / "obstacle.yaml";
+  const YAML::Node obstacle_yaml = std::filesystem::exists(obstacle_path) ?
+    YAML::LoadFile(obstacle_path.string()) : YAML::Node{};
 
   ControllerConfig config;
   config.mppi.num_samples = GetOr(mppi_yaml, "num_samples", config.mppi.num_samples);
@@ -180,6 +183,37 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   config.visualization_rate_hz = GetOr(
     mppi_yaml, "visualization_rate_hz", config.visualization_rate_hz);
   config.num_rollouts = GetOr(mppi_yaml, "num_rollouts", config.num_rollouts);
+
+  config.obstacles.enabled = GetOr(obstacle_yaml, "enabled", config.obstacles.enabled);
+  config.obstacles.grid_resolution_m = GetOr(
+    obstacle_yaml, "grid_resolution_m", config.obstacles.grid_resolution_m);
+  config.obstacles.grid_width_m = GetOr(
+    obstacle_yaml, "grid_width_m", config.obstacles.grid_width_m);
+  config.obstacles.grid_height_m = GetOr(
+    obstacle_yaml, "grid_height_m", config.obstacles.grid_height_m);
+  config.obstacles.maximum_distance_m = GetOr(
+    obstacle_yaml, "maximum_distance_m", config.obstacles.maximum_distance_m);
+  config.obstacles.obstacle_inflation_radius_m = GetOr(
+    obstacle_yaml, "obstacle_inflation_radius_m",
+    config.obstacles.obstacle_inflation_radius_m);
+  config.obstacles.pose_history_s = GetOr(
+    obstacle_yaml, "pose_history_s", config.obstacles.pose_history_s);
+  config.obstacles.maximum_extrapolation_s = GetOr(
+    obstacle_yaml, "maximum_extrapolation_s", config.obstacles.maximum_extrapolation_s);
+  config.obstacles.distance_weight = GetOr(
+    obstacle_yaml, "distance_weight", config.obstacles.distance_weight);
+  config.obstacles.influence_distance_m = GetOr(
+    obstacle_yaml, "influence_distance_m", config.obstacles.influence_distance_m);
+  config.obstacles.latch_threshold_m = GetOr(
+    obstacle_yaml, "latch_threshold_m", config.obstacles.latch_threshold_m);
+  config.obstacles.latching_weight = GetOr(
+    obstacle_yaml, "latching_weight", config.obstacles.latching_weight);
+  config.obstacles.footprint_length_m = GetOr(
+    obstacle_yaml, "footprint_length_m", config.obstacles.footprint_length_m);
+  config.obstacles.footprint_width_m = GetOr(
+    obstacle_yaml, "footprint_width_m", config.obstacles.footprint_width_m);
+  config.obstacles.footprint_circles = GetOr(
+    obstacle_yaml, "footprint_circles", config.obstacles.footprint_circles);
 
   const auto sigma = mppi_yaml["sigma"];
   config.mppi.sigma[kSteering] = GetOr(sigma, "steering_angle_rad", config.mppi.sigma[kSteering]);
@@ -366,6 +400,24 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     !(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m > 0.0F))
   {
     throw std::runtime_error("invalid cost or vehicle physical parameters");
+  }
+  if (config.obstacles.enabled &&
+    (!(config.obstacles.grid_resolution_m > 0.0F) ||
+    !(config.obstacles.grid_width_m > config.obstacles.grid_resolution_m) ||
+    !(config.obstacles.grid_height_m > config.obstacles.grid_resolution_m) ||
+    !(config.obstacles.maximum_distance_m > 0.0F) ||
+    !(config.obstacles.pose_history_s > 0.0F) ||
+    config.obstacles.maximum_extrapolation_s < 0.0F ||
+    config.obstacles.obstacle_inflation_radius_m < 0.0F ||
+    config.obstacles.distance_weight < 0.0F ||
+    !(config.obstacles.influence_distance_m > 0.0F) ||
+    config.obstacles.latch_threshold_m < 0.0F ||
+    config.obstacles.latching_weight < 0.0F ||
+    !(config.obstacles.footprint_length_m > 0.0F) ||
+    !(config.obstacles.footprint_width_m > 0.0F) ||
+    config.obstacles.footprint_circles == 0U))
+  {
+    throw std::runtime_error("invalid obstacle configuration");
   }
   if (config.raceline_path.empty()) {
     throw std::runtime_error("model.yaml must define raceline_path");

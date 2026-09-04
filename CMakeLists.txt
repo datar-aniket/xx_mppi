@@ -28,6 +28,8 @@ add_library(xx_mppi_core SHARED
   src/controller/mppi_controller.cpp
   src/costs/cost_evaluator.cpp
   src/dynamics/rollout.cpp
+  src/obstacles/pose_history.cpp
+  src/obstacles/signed_distance_field.cpp
   src/reference/raceline.cpp
 )
 target_include_directories(xx_mppi_core PUBLIC
@@ -173,6 +175,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_visualization xx_mppi_ros)
   target_compile_definitions(test_visualization PRIVATE
     XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_obstacles test/test_obstacles.cpp)
+  target_link_libraries(test_obstacles xx_mppi_core)
 endif()
 
 ament_export_include_directories(include)

@@ -154,6 +154,40 @@ struct CostWeights {
   float wheel_slip_band{0.2F};
 };
 
+struct ObstacleConfig {
+  bool enabled{false};
+  float grid_resolution_m{0.05F};
+  float grid_width_m{12.0F};
+  float grid_height_m{12.0F};
+  float maximum_distance_m{5.0F};
+  float obstacle_inflation_radius_m{0.03F};
+  float pose_history_s{0.10F};
+  float maximum_extrapolation_s{0.02F};
+  float distance_weight{500.0F};
+  float influence_distance_m{0.75F};
+  float latch_threshold_m{0.10F};
+  float latching_weight{60000.0F};
+  float footprint_length_m{0.557F};
+  float footprint_width_m{0.249F};
+  std::uint16_t footprint_circles{3U};
+};
+
+struct ObstacleField {
+  std::int64_t stamp_ns{};
+  std::uint64_t generation{};
+  float origin_east_m{};
+  float origin_north_m{};
+  float resolution_m{};
+  std::uint32_t width{};
+  std::uint32_t height{};
+  std::vector<float> signed_distance_m;
+
+  [[nodiscard]] bool valid() const noexcept {
+    return resolution_m > 0.0F && width > 1U && height > 1U &&
+      signed_distance_m.size() == static_cast<std::size_t>(width) * height;
+  }
+};
+
 struct ReferencePoint {
   float s_m{};
   float curvature_inv_m{};

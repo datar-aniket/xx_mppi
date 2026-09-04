@@ -1,0 +1,22 @@
+enabled: true
+
+# Rebuilt from only the newest scan. The last complete field remains active if
+# scans stop; new scans replace it atomically rather than accumulating points.
+grid_resolution_m: 0.05
+grid_width_m: 12.0
+grid_height_m: 12.0
+maximum_distance_m: 5.0
+obstacle_inflation_radius_m: 0.03
+
+pose_history_s: 0.10
+maximum_extrapolation_s: 0.02
+
+distance_weight: 500.0
+influence_distance_m: 0.75
+latch_threshold_m: 0.10
+latching_weight: 60000.0
+
+# Traxxas TRX-4 Sport bounding box represented conservatively by three circles.
+footprint_length_m: 0.557
+footprint_width_m: 0.249
+footprint_circles: 3

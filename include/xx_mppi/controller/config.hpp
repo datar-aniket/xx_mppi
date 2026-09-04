@@ -12,6 +12,7 @@ namespace xxcar::mppi {
 struct ControllerConfig {
   MppiConfig mppi{};
   CostWeights costs{};
+  ObstacleConfig obstacles{};
   VehicleParameters vehicle{};
   ModelKind model_kind{ModelKind::kDynamicBicycleFiala};
   IntegratorKind integrator{IntegratorKind::kEuler};
