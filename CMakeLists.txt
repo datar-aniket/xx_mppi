@@ -173,8 +173,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_config_message xx_mppi_ros)
   target_compile_definitions(test_config_message PRIVATE
     XX_MPPI_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  file(RELATIVE_PATH XX_MPPI_TEST_CURRENT_MAP_NAME
+    "$ENV{HOME}/map" "${CMAKE_CURRENT_SOURCE_DIR}/test/current_map")
   set_tests_properties(test_config_message PROPERTIES
-    ENVIRONMENT "current_map=${CMAKE_CURRENT_SOURCE_DIR}/test/current_map")
+    ENVIRONMENT
+      "current_map=${CMAKE_CURRENT_SOURCE_DIR}/test/current_map;CURRENT_MAP=${XX_MPPI_TEST_CURRENT_MAP_NAME}")
 
   ament_add_gtest(test_ekf_state_adapter test/test_ekf_state_adapter.cpp)
   target_link_libraries(test_ekf_state_adapter xx_mppi_ros)
