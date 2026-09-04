@@ -19,6 +19,10 @@ def _launch_node(context):
         "config_directory": LaunchConfiguration("config_directory"),
         "state_topic": LaunchConfiguration("state_topic"),
         "trajectory_topic": LaunchConfiguration("trajectory_topic"),
+        "scan_topic": LaunchConfiguration("scan_topic"),
+        "base_frame": LaunchConfiguration("base_frame"),
+        "laser_frame": LaunchConfiguration("laser_frame"),
+        "scan_qos_depth": LaunchConfiguration("scan_qos_depth"),
         "maximum_state_age_s": LaunchConfiguration("maximum_state_age_s"),
         "future_tolerance_s": LaunchConfiguration("future_tolerance_s"),
         "require_absolute_yaw": LaunchConfiguration("require_absolute_yaw"),
@@ -77,6 +81,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "trajectory_topic", default_value="vehicle_control_trajectory"
         ),
+        DeclareLaunchArgument("scan_topic", default_value="/scan"),
+        DeclareLaunchArgument("base_frame", default_value="base_link"),
+        DeclareLaunchArgument("laser_frame", default_value="laser"),
+        DeclareLaunchArgument("scan_qos_depth", default_value="1"),
         DeclareLaunchArgument("publish_direct_control", default_value=""),
         DeclareLaunchArgument("direct_control_topic", default_value=""),
         DeclareLaunchArgument("control_mode", default_value=""),

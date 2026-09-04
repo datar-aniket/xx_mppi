@@ -36,5 +36,6 @@ MppiSolution CudaMppiController::Solve(
 const MppiConfig & CudaMppiController::config() const noexcept { return impl_->config_; }
 bool CudaMppiController::using_cuda() const noexcept { return false; }
 void CudaMppiController::UpdateObstacleField(const ObstacleField &) {}
+void CudaMppiController::ClearObstacleField() {}
 
 }  // namespace xxcar::mppi

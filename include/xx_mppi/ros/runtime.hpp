@@ -36,7 +36,11 @@ class MppiRosRuntime {
   ~MppiRosRuntime();
 
   [[nodiscard]] Projection OnObservation(const VehicleObservation & observation);
+  void SetObstacleField(std::shared_ptr<const ObstacleField> field);
   void Reset();
+  [[nodiscard]] const ControllerConfig & config() const noexcept {
+    return controller_->config();
+  }
 
  private:
   void PublishStaticVisualization();
@@ -67,6 +71,8 @@ class MppiRosRuntime {
   std::mutex controller_mutex_;
   std::uint64_t observation_generation_{};
   std::uint64_t solved_generation_{};
+  std::shared_ptr<const ObstacleField> pending_obstacle_field_;
+  std::uint64_t applied_obstacle_generation_{};
   std::mutex solution_mutex_;
   std::shared_ptr<const PlannedTrajectory> latest_solution_;
   std::shared_ptr<const PlannedTrajectory> published_solution_;

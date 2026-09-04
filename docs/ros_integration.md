@@ -7,6 +7,12 @@ publish `xxcar_msgs/msg/VehicleControlTrajectory` on
 `PID_lanekeeping`. Topic names and output selection are ROS parameters and
 launch arguments. No MCU/UART publisher belongs to this package.
 
+Obstacle avoidance subscribes to `/scan` (`sensor_msgs/msg/LaserScan`) in frame
+`laser`. It obtains `base_link <- laser` once from TF, then reuses the cached
+static transform. SDF construction runs on a latest-scan-wins worker thread and
+does not execute in the state or MPPI timer callbacks. See
+`docs/obstacle_avoidance.md` for deskew and cost details.
+
 The adapter uses `header.stamp` as `solution_pose_time`, the ENU pose quaternion
 for yaw, body-FLU horizontal twist magnitude for speed, `angular_velocity.z`
 for yaw rate, `linear_acceleration.x`, sideslip, wheel torque, steering, and
@@ -186,6 +192,8 @@ ros2 topic hz /ekf/state
 ros2 topic echo /ekf/state --once
 ros2 topic hz /vehicle_control_trajectory
 ros2 topic echo /vehicle_control_trajectory --once
+ros2 topic hz /scan
+ros2 run tf2_ros tf2_echo base_link laser
 ros2 run xx_mppi smoke_test_ros_pipeline.py --duration 10
 ```
 

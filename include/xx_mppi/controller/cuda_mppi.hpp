@@ -36,6 +36,7 @@ class CudaMppiController {
     const Control & previous_control, float initial_path_s_m, float shift_fraction,
     bool reset, std::uint32_t num_visualization_rollouts = 0U);
   void UpdateObstacleField(const ObstacleField & field);
+  void ClearObstacleField();
 
   [[nodiscard]] const MppiConfig & config() const noexcept;
   [[nodiscard]] bool using_cuda() const noexcept;

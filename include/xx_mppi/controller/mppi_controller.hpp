@@ -76,6 +76,7 @@ class MppiController {
   // with the newest (possibly downsampled) solve.
   void RecordPublishedControl(const Control & control) noexcept;
   void UpdateObstacleField(const ObstacleField & field);
+  void ClearObstacleField();
   void Reset() noexcept;
 
   [[nodiscard]] const ControllerConfig & config() const noexcept { return config_; }

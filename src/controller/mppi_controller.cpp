@@ -34,6 +34,8 @@ void MppiController::UpdateObstacleField(const ObstacleField & field) {
   optimizer_.UpdateObstacleField(field);
 }
 
+void MppiController::ClearObstacleField() { optimizer_.ClearObstacleField(); }
+
 // Warm-start reference for control smoothness/rate costs. EkfState provides
 // radians and newton-metres already, so preserve the feedback exactly. An
 // out-of-bound measured actuator state is meaningful: the first feasible

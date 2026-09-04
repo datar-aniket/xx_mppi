@@ -125,6 +125,12 @@ latching there would set the same flag across the whole population and remove
 all boundary discrimination from the solve. Online lambda and diagonal-sigma adaptation use effective
 sample size and selection-pressure statistics.
 
+The obstacle path is separate from the state and solve callbacks. A latest-only
+LiDAR worker deskews rays with accepted pose history, builds a rolling ENU
+signed distance field, and atomically hands an immutable generation to the
+runtime. The next solve copies only a complete new field to the existing CUDA
+stream; missing scans leave the previous complete field active.
+
 Analytic Fiala/kinematic rollouts are fused per sample. Neural dynamics perform
 one TensorRT batch over all `K` samples per integration stage. CUDA buffers and
 Philox RNG states persist between solves; only the small reference horizon,

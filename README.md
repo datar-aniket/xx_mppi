@@ -41,6 +41,11 @@ visualization after a solve. Enable it with `publish_visualization:=true`; set
 `visualization_rate_hz` and `num_rollouts` in `config/mppi.yaml`. All ROS topics
 use best-effort reliability; RViz displays must also select Best Effort.
 
+Obstacle avoidance consumes `/scan` in the `laser` frame, caches the static
+`base_link <- laser` transform, deskews each ray against 100 ms of accepted EKF
+pose history, and rebuilds a latest-scan-only signed distance field on a
+dedicated worker. The last complete field remains active if scans stop.
+
 The runnable ROS node subscribes to `xxcar_msgs/msg/EkfState` on
 `ekf/state`, validates estimator/VESC status and sample freshness, projects each
 accepted ENU pose into continuous Frenet coordinates, and resets its warm start
@@ -72,3 +77,4 @@ See:
 - `docs/model_pipeline.md` for PyTorch-to-TensorRT conversion.
 - `docs/ros_integration.md` for state validity, parameters, and vehicle startup.
 - `docs/orin_deployment.md` for the JetPack build and benchmark procedure.
+- `docs/obstacle_avoidance.md` for LiDAR deskew, SDF, and obstacle costs.

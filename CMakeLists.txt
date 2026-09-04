@@ -17,7 +17,10 @@ find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(xxcar_msgs REQUIRED)
@@ -29,6 +32,7 @@ add_library(xx_mppi_core SHARED
   src/costs/cost_evaluator.cpp
   src/costs/obstacle_cost.cpp
   src/dynamics/rollout.cpp
+  src/obstacles/laser_deskew.cpp
   src/obstacles/pose_history.cpp
   src/obstacles/signed_distance_field.cpp
   src/reference/raceline.cpp
@@ -55,13 +59,18 @@ target_include_directories(xx_mppi_ros PUBLIC
 target_link_libraries(xx_mppi_ros xx_mppi_core)
 ament_target_dependencies(
   xx_mppi_ros ament_index_cpp geometry_msgs nav_msgs rclcpp
-  std_msgs visualization_msgs xxcar_msgs)
+  sensor_msgs std_msgs tf2 tf2_ros visualization_msgs xxcar_msgs)
 target_compile_options(xx_mppi_ros PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 
 add_executable(xx_mppi_node src/ros/main.cpp)
 target_link_libraries(xx_mppi_node xx_mppi_ros)
 ament_target_dependencies(xx_mppi_node rclcpp)
 target_compile_options(xx_mppi_node PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+
+add_executable(xxcar_benchmark_sdf tools/benchmark_obstacle_sdf.cpp)
+target_link_libraries(xxcar_benchmark_sdf xx_mppi_core)
+target_compile_options(xxcar_benchmark_sdf PRIVATE
+  -Wall -Wextra -Wpedantic -Wconversion)
 
 set(XX_MPPI_HAS_CUDA OFF)
 if(XX_MPPI_ENABLE_CUDA)
@@ -126,7 +135,7 @@ endif()
 
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch docs DESTINATION share/${PROJECT_NAME})
-install(TARGETS xx_mppi_core xx_mppi_ros xx_mppi_node
+install(TARGETS xx_mppi_core xx_mppi_ros xx_mppi_node xxcar_benchmark_sdf
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -185,5 +194,5 @@ ament_export_include_directories(include)
 ament_export_libraries(xx_mppi_core xx_mppi_ros)
 ament_export_dependencies(
   ament_index_cpp geometry_msgs nav_msgs rclcpp std_msgs
-  visualization_msgs xxcar_msgs yaml-cpp)
+  sensor_msgs tf2 tf2_ros visualization_msgs xxcar_msgs yaml-cpp)
 ament_package()

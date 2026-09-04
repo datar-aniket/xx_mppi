@@ -1494,6 +1494,11 @@ class CudaMppiController::Impl {
       field.resolution_m, field.width, field.height, true};
   }
 
+  void ClearObstacleField() {
+    CheckCuda(cudaStreamSynchronize(stream_), "wait before clearing obstacle field");
+    obstacle_field_.valid = false;
+  }
+
   const MppiConfig & config() const noexcept { return config_; }
 
  private:
@@ -1585,5 +1590,7 @@ bool CudaMppiController::using_cuda() const noexcept { return true; }
 void CudaMppiController::UpdateObstacleField(const ObstacleField & field) {
   impl_->UpdateObstacleField(field);
 }
+
+void CudaMppiController::ClearObstacleField() { impl_->ClearObstacleField(); }
 
 }  // namespace xxcar::mppi

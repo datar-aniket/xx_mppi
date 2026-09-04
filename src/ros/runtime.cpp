@@ -1,6 +1,7 @@
 #include "xx_mppi/ros/runtime.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -208,10 +209,20 @@ Projection MppiRosRuntime::OnObservation(const VehicleObservation & observation)
   return projection;
 }
 
+void MppiRosRuntime::SetObstacleField(std::shared_ptr<const ObstacleField> field) {
+  std::atomic_store_explicit(
+    &pending_obstacle_field_, std::move(field), std::memory_order_release);
+}
+
 void MppiRosRuntime::Reset() {
+  std::atomic_store_explicit(
+    &pending_obstacle_field_, std::shared_ptr<const ObstacleField>{},
+    std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(controller_mutex_);
     controller_->Reset();
+    controller_->ClearObstacleField();
+    applied_obstacle_generation_ = 0U;
     observation_generation_ = 0U;
     solved_generation_ = 0U;
     next_visualization_time_ = std::chrono::steady_clock::now();
@@ -238,6 +249,12 @@ void MppiRosRuntime::SolveCallback() {
       return;
     }
     try {
+      const auto field = std::atomic_load_explicit(
+        &pending_obstacle_field_, std::memory_order_acquire);
+      if (field && field->generation != applied_obstacle_generation_) {
+        controller_->UpdateObstacleField(*field);
+        applied_obstacle_generation_ = field->generation;
+      }
       capture_visualization = visualization_.enabled &&
         std::chrono::steady_clock::now() >= next_visualization_time_;
       trajectory = controller_->PlanLatest(

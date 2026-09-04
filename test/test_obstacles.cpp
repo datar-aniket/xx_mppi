@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "xx_mppi/obstacles/pose_history.hpp"
+#include "xx_mppi/obstacles/laser_deskew.hpp"
 #include "xx_mppi/obstacles/signed_distance_field.hpp"
 
 namespace xxcar::mppi {
@@ -66,6 +67,39 @@ TEST(SignedDistanceField, BilinearSamplingRejectsOutsideGrid) {
   SignedDistanceFieldBuilder builder(config);
   const auto field = builder.Build({Point2D{0.0F, 0.0F}}, {}, 10, 1);
   EXPECT_FLOAT_EQ(SampleSignedDistance(field, 10.0F, 0.0F, -0.25F), -0.25F);
+}
+
+TEST(LaserDeskew, UsesPerRayPoseAndStaticExtrinsic) {
+  PoseHistory history(0.1F, 0.0F);
+  history.Add(TimedVehiclePose{1'000'000'000, {0.0F, 0.0F, 0.0F}, 1.0F, 0.0F, 0.0F});
+  history.Add(TimedVehiclePose{1'025'000'000, {0.025F, 0.0F, 0.0F}, 1.0F, 0.0F, 0.0F});
+  LaserScanData scan;
+  scan.first_ray_stamp_ns = 1'000'000'000;
+  scan.angle_min_rad = 0.0F;
+  scan.angle_increment_rad = 0.0F;
+  scan.time_increment_s = 0.025F;
+  scan.range_min_m = 0.1F;
+  scan.range_max_m = 10.0F;
+  scan.ranges_m = {1.0F, 1.0F};
+  const auto result = DeskewLaserScan(scan, RigidTransform2D{0.1F, 0.0F, 0.0F}, history);
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->obstacle_points.size(), 2U);
+  EXPECT_NEAR(result->obstacle_points[0].east_m, 1.1F, 1.0e-5F);
+  EXPECT_NEAR(result->obstacle_points[1].east_m, 1.125F, 1.0e-5F);
+  EXPECT_EQ(result->reference_stamp_ns, 1'025'000'000);
+}
+
+TEST(LaserDeskew, RejectsScanOutsidePoseCoverage) {
+  PoseHistory history(0.1F, 0.005F);
+  history.Add(TimedVehiclePose{1'000'000'000, {}, 0.0F, 0.0F, 0.0F});
+  LaserScanData scan;
+  scan.first_ray_stamp_ns = 1'000'000'000;
+  scan.angle_increment_rad = 0.1F;
+  scan.time_increment_s = 0.01F;
+  scan.range_min_m = 0.1F;
+  scan.range_max_m = 10.0F;
+  scan.ranges_m = {1.0F, 1.0F};
+  EXPECT_FALSE(DeskewLaserScan(scan, {}, history));
 }
 
 }  // namespace
