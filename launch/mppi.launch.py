@@ -39,6 +39,7 @@ def _launch_node(context):
         "track_right_boundary_topic": LaunchConfiguration(
             "track_right_boundary_topic"
         ),
+        "obstacle_costmap_topic": LaunchConfiguration("obstacle_costmap_topic"),
     }
 
     # Empty launch arguments leave these values to config/mppi.yaml. A supplied
@@ -119,6 +120,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "track_right_boundary_topic",
             default_value="xx_mppi/track_right_boundary",
+        ),
+        DeclareLaunchArgument(
+            "obstacle_costmap_topic", default_value="xx_mppi/obstacle_costmap"
         ),
     ]
     return LaunchDescription(arguments + [OpaqueFunction(function=_launch_node)])

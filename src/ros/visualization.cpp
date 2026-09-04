@@ -162,4 +162,33 @@ StaticVisualizationPaths ToStaticVisualizationPaths(
   return result;
 }
 
+nav_msgs::msg::OccupancyGrid ToObstacleCostmap(
+  const ObstacleField & field, const ObstacleConfig & config,
+  const rclcpp::Time & publication_time, const std::string & frame_id)
+{
+  if (frame_id.empty() || !field.valid() || !(config.influence_distance_m > 0.0F)) {
+    throw std::invalid_argument("invalid obstacle costmap visualization input");
+  }
+  nav_msgs::msg::OccupancyGrid map;
+  map.header.stamp = publication_time;
+  map.header.frame_id = frame_id;
+  map.info.map_load_time = publication_time;
+  map.info.resolution = field.resolution_m;
+  map.info.width = field.width;
+  map.info.height = field.height;
+  map.info.origin.position.x = field.origin_east_m;
+  map.info.origin.position.y = field.origin_north_m;
+  map.info.origin.orientation.w = 1.0;
+  map.data.resize(field.signed_distance_m.size());
+  std::transform(
+    field.signed_distance_m.begin(), field.signed_distance_m.end(), map.data.begin(),
+    [&config](const float distance) {
+      const float normalized = std::clamp(
+        (config.influence_distance_m - distance) / config.influence_distance_m,
+        0.0F, 1.0F);
+      return static_cast<std::int8_t>(std::lround(100.0F * normalized * normalized));
+    });
+  return map;
+}
+
 }  // namespace xxcar::mppi

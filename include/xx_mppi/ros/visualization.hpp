@@ -3,6 +3,7 @@
 #include <string>
 
 #include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/time.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -19,6 +20,7 @@ struct VisualizationConfig {
   std::string raceline_topic{"xx_mppi/raceline"};
   std::string left_boundary_topic{"xx_mppi/track_left_boundary"};
   std::string right_boundary_topic{"xx_mppi/track_right_boundary"};
+  std::string obstacle_costmap_topic{"xx_mppi/obstacle_costmap"};
 };
 
 struct StaticVisualizationPaths {
@@ -38,5 +40,9 @@ struct StaticVisualizationPaths {
 [[nodiscard]] StaticVisualizationPaths ToStaticVisualizationPaths(
   const Raceline & raceline, const rclcpp::Time & publication_time,
   const std::string & frame_id);
+
+[[nodiscard]] nav_msgs::msg::OccupancyGrid ToObstacleCostmap(
+  const ObstacleField & field, const ObstacleConfig & config,
+  const rclcpp::Time & publication_time, const std::string & frame_id);
 
 }  // namespace xxcar::mppi

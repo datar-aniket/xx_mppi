@@ -12,6 +12,10 @@ Obstacle avoidance subscribes to `/scan` (`sensor_msgs/msg/LaserScan`) in frame
 static transform. SDF construction runs on a latest-scan-wins worker thread and
 does not execute in the state or MPPI timer callbacks. See
 `docs/obstacle_avoidance.md` for deskew and cost details.
+With `publish_visualization:=true`, a normalized `nav_msgs/msg/OccupancyGrid`
+is published on `xx_mppi/obstacle_costmap` at `visualization_rate_hz` (20 Hz in
+the shipped config). Costmap conversion/publication and terminal info logging
+run on the background visualization worker.
 
 The adapter uses `header.stamp` as `solution_pose_time`, the ENU pose quaternion
 for yaw, body-FLU horizontal twist magnitude for speed, `angular_velocity.z`

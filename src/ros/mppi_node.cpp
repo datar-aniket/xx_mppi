@@ -81,6 +81,8 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
     "track_left_boundary_topic", "xx_mppi/track_left_boundary");
   visualization.right_boundary_topic = declare_parameter<std::string>(
     "track_right_boundary_topic", "xx_mppi/track_right_boundary");
+  visualization.obstacle_costmap_topic = declare_parameter<std::string>(
+    "obstacle_costmap_topic", "xx_mppi/obstacle_costmap");
 
   if (config_directory.empty() || state_topic.empty() ||
     (!direct_control.enabled && trajectory_topic.empty()))

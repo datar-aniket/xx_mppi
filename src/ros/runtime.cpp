@@ -45,7 +45,8 @@ MppiRosRuntime::MppiRosRuntime(
     if (visualization_.frame_id.empty() || visualization_.planned_path_topic.empty() ||
       visualization_.marker_topic.empty() || visualization_.raceline_topic.empty() ||
       visualization_.left_boundary_topic.empty() ||
-      visualization_.right_boundary_topic.empty())
+      visualization_.right_boundary_topic.empty() ||
+      visualization_.obstacle_costmap_topic.empty())
     {
       throw std::invalid_argument("visualization frame and topics must not be empty");
     }
@@ -60,10 +61,15 @@ MppiRosRuntime::MppiRosRuntime(
       visualization_.left_boundary_topic, static_qos);
     right_boundary_publisher_ = node_.create_publisher<nav_msgs::msg::Path>(
       visualization_.right_boundary_topic, static_qos);
+    if (controller_->config().obstacles.enabled) {
+      obstacle_costmap_publisher_ = node_.create_publisher<nav_msgs::msg::OccupancyGrid>(
+        visualization_.obstacle_costmap_topic, rclcpp::QoS(1).best_effort());
+    }
     visualization_period_ = std::chrono::nanoseconds(
       static_cast<std::int64_t>(std::llround(
         1.0e9 / static_cast<double>(controller_->config().visualization_rate_hz))));
     next_visualization_time_ = std::chrono::steady_clock::now();
+    next_costmap_time_ = next_visualization_time_;
   }
   const auto solve_period_ns = static_cast<std::int64_t>(std::llround(
       1.0e9 / static_cast<double>(controller_->config().solve_rate_hz)));
@@ -91,12 +97,14 @@ MppiRosRuntime::MppiRosRuntime(
       "control_publish_rate_hz exceeds solve_rate_hz; new-only publication will be "
       "limited by the solve/state rate");
   }
+  visualization_thread_ = std::thread([this]() {VisualizationWorker();});
   if (visualization_.enabled) {
-    visualization_thread_ = std::thread([this]() {VisualizationWorker();});
     RCLCPP_INFO(
       node_.get_logger(),
-      "Best-effort visualization enabled: Path '%s', MarkerArray '%s', static paths at 1 Hz",
-      visualization_.planned_path_topic.c_str(), visualization_.marker_topic.c_str());
+      "Best-effort visualization enabled: Path '%s', MarkerArray '%s', costmap '%s' at %.3f Hz",
+      visualization_.planned_path_topic.c_str(), visualization_.marker_topic.c_str(),
+      visualization_.obstacle_costmap_topic.c_str(),
+      static_cast<double>(controller_->config().visualization_rate_hz));
   } else {
     RCLCPP_INFO(
       node_.get_logger(),
@@ -133,6 +141,39 @@ void MppiRosRuntime::PublishTrajectoryVisualization(
       trajectory, controller_->raceline(), publication_time, visualization_.frame_id));
 }
 
+void MppiRosRuntime::PublishObstacleVisualization(
+  const ObstacleField & field, const rclcpp::Time & publication_time)
+{
+  if (obstacle_costmap_publisher_) {
+    obstacle_costmap_publisher_->publish(ToObstacleCostmap(
+        field, controller_->config().obstacles, publication_time,
+        visualization_.frame_id));
+  }
+}
+
+void MppiRosRuntime::PublishInfo(const PlannedTrajectory & trajectory) {
+  if (trajectory.controls.empty()) {
+    return;
+  }
+  const auto & diagnostics = trajectory.diagnostics;
+  const auto & command = trajectory.controls.front();
+  const double solution_age_ms = static_cast<double>(
+    node_.get_clock()->now().nanoseconds() - trajectory.solution_pose_time_ns) * 1.0e-6;
+  RCLCPP_INFO(
+    node_.get_logger(),
+    "MPPI info: solve=%.3f ms lambda=%.6g sigma=[steer %.6g rad, torque %.6g Nm] "
+    "command=[steer %.6g rad, torque %.6g Nm] cost=%.6g ESS=%.3f finite=%u age=%.3f ms",
+    static_cast<double>(diagnostics.solve_time_ms),
+    static_cast<double>(diagnostics.lambda_used),
+    static_cast<double>(diagnostics.sigma_used[kSteering]),
+    static_cast<double>(diagnostics.sigma_used[kWheelTorque]),
+    static_cast<double>(command[kSteering]),
+    static_cast<double>(command[kWheelTorque]),
+    static_cast<double>(diagnostics.minimum_cost),
+    static_cast<double>(diagnostics.effective_sample_size),
+    static_cast<unsigned>(diagnostics.finite_rollouts), solution_age_ms);
+}
+
 void MppiRosRuntime::QueueVisualization(
   std::shared_ptr<const PlannedTrajectory> trajectory,
   const rclcpp::Time & publication_time)
@@ -148,11 +189,17 @@ void MppiRosRuntime::VisualizationWorker() {
   auto next_static_publication = std::chrono::steady_clock::now();
   while (true) {
     std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>> work;
+    std::optional<std::pair<std::shared_ptr<const ObstacleField>, rclcpp::Time>> obstacle_work;
+    std::shared_ptr<const PlannedTrajectory> info_work;
     bool publish_static = false;
     {
       std::unique_lock<std::mutex> lock(visualization_mutex_);
-      visualization_cv_.wait_until(lock, next_static_publication, [this]() {
-        return stop_visualization_ || pending_visualization_.has_value();
+      const auto wake_time = visualization_.enabled ? next_static_publication :
+        std::chrono::steady_clock::time_point::max();
+      visualization_cv_.wait_until(lock, wake_time, [this]() {
+        return stop_visualization_ || pending_visualization_.has_value() ||
+               pending_obstacle_visualization_.has_value() ||
+               static_cast<bool>(pending_info_);
       });
       if (stop_visualization_) {
         return;
@@ -161,11 +208,19 @@ void MppiRosRuntime::VisualizationWorker() {
         work = std::move(pending_visualization_);
         pending_visualization_.reset();
       }
+      if (pending_obstacle_visualization_) {
+        obstacle_work = std::move(pending_obstacle_visualization_);
+        pending_obstacle_visualization_.reset();
+      }
+      info_work = std::move(pending_info_);
       const auto now = std::chrono::steady_clock::now();
-      if (now >= next_static_publication) {
+      if (visualization_.enabled && now >= next_static_publication) {
         publish_static = true;
         next_static_publication = now + std::chrono::seconds(1);
       }
+    }
+    if (info_work) {
+      PublishInfo(*info_work);
     }
     if (publish_static) {
       try {
@@ -183,6 +238,15 @@ void MppiRosRuntime::VisualizationWorker() {
         RCLCPP_ERROR_THROTTLE(
           node_.get_logger(), *node_.get_clock(), 1000,
           "MPPI visualization publication failed: %s", error.what());
+      }
+    }
+    if (obstacle_work) {
+      try {
+        PublishObstacleVisualization(*obstacle_work->first, obstacle_work->second);
+      } catch (const std::exception & error) {
+        RCLCPP_ERROR_THROTTLE(
+          node_.get_logger(), *node_.get_clock(), 1000,
+          "MPPI obstacle costmap publication failed: %s", error.what());
       }
     }
   }
@@ -211,7 +275,16 @@ Projection MppiRosRuntime::OnObservation(const VehicleObservation & observation)
 
 void MppiRosRuntime::SetObstacleField(std::shared_ptr<const ObstacleField> field) {
   std::atomic_store_explicit(
-    &pending_obstacle_field_, std::move(field), std::memory_order_release);
+    &pending_obstacle_field_, field, std::memory_order_release);
+  if (visualization_.enabled && obstacle_costmap_publisher_) {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(visualization_mutex_);
+    if (now >= next_costmap_time_) {
+      pending_obstacle_visualization_.emplace(std::move(field), node_.get_clock()->now());
+      next_costmap_time_ = now + visualization_period_;
+      visualization_cv_.notify_one();
+    }
+  }
 }
 
 void MppiRosRuntime::Reset() {
@@ -237,6 +310,9 @@ void MppiRosRuntime::Reset() {
   {
     std::lock_guard<std::mutex> visualization_lock(visualization_mutex_);
     pending_visualization_.reset();
+    pending_obstacle_visualization_.reset();
+    pending_info_.reset();
+    next_costmap_time_ = std::chrono::steady_clock::now();
   }
 }
 
@@ -354,26 +430,14 @@ void MppiRosRuntime::InfoLogCallback() {
     std::lock_guard<std::mutex> lock(solution_mutex_);
     solution = published_solution_;
   }
-  if (!solution || solution->controls.empty()) {
+  if (!solution) {
     return;
   }
-  const auto & diagnostics = solution->diagnostics;
-  const auto & command = solution->controls.front();
-  const double solution_age_ms = static_cast<double>(
-    node_.get_clock()->now().nanoseconds() - solution->solution_pose_time_ns) * 1.0e-6;
-  RCLCPP_INFO(
-    node_.get_logger(),
-    "MPPI info: solve=%.3f ms lambda=%.6g sigma=[steer %.6g rad, torque %.6g Nm] "
-    "command=[steer %.6g rad, torque %.6g Nm] cost=%.6g ESS=%.3f finite=%u age=%.3f ms",
-    static_cast<double>(diagnostics.solve_time_ms),
-    static_cast<double>(diagnostics.lambda_used),
-    static_cast<double>(diagnostics.sigma_used[kSteering]),
-    static_cast<double>(diagnostics.sigma_used[kWheelTorque]),
-    static_cast<double>(command[kSteering]),
-    static_cast<double>(command[kWheelTorque]),
-    static_cast<double>(diagnostics.minimum_cost),
-    static_cast<double>(diagnostics.effective_sample_size),
-    static_cast<unsigned>(diagnostics.finite_rollouts), solution_age_ms);
+  {
+    std::lock_guard<std::mutex> lock(visualization_mutex_);
+    pending_info_ = std::move(solution);
+  }
+  visualization_cv_.notify_one();
 }
 
 }  // namespace xxcar::mppi

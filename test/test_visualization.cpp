@@ -71,5 +71,30 @@ TEST(Visualization, CreatesRacelineAndBothTrackBoundaryPaths) {
     paths.raceline.poses.front().pose.orientation.z, std::sqrt(0.5), 1.0e-6);
 }
 
+TEST(Visualization, ConvertsSignedDistanceToNormalizedCostmap) {
+  ObstacleField field;
+  field.resolution_m = 0.1F;
+  field.width = 2U;
+  field.height = 2U;
+  field.origin_east_m = -1.0F;
+  field.origin_north_m = -2.0F;
+  field.signed_distance_m = {-0.1F, 0.0F, 0.5F, 1.0F};
+  ObstacleConfig config;
+  config.influence_distance_m = 1.0F;
+
+  const auto map = ToObstacleCostmap(
+    field, config, rclcpp::Time(3'000'000'000LL), "map");
+
+  EXPECT_EQ(map.header.frame_id, "map");
+  EXPECT_EQ(map.info.width, 2U);
+  EXPECT_EQ(map.info.height, 2U);
+  EXPECT_NEAR(map.info.origin.position.x, -1.0, 1.0e-6);
+  ASSERT_EQ(map.data.size(), 4U);
+  EXPECT_EQ(map.data[0], 100);
+  EXPECT_EQ(map.data[1], 100);
+  EXPECT_EQ(map.data[2], 25);
+  EXPECT_EQ(map.data[3], 0);
+}
+
 }  // namespace
 }  // namespace xxcar::mppi

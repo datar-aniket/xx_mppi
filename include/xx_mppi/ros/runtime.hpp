@@ -46,6 +46,9 @@ class MppiRosRuntime {
   void PublishStaticVisualization();
   void PublishTrajectoryVisualization(
     const PlannedTrajectory & trajectory, const rclcpp::Time & publication_time);
+  void PublishObstacleVisualization(
+    const ObstacleField & field, const rclcpp::Time & publication_time);
+  void PublishInfo(const PlannedTrajectory & trajectory);
   void QueueVisualization(
     std::shared_ptr<const PlannedTrajectory> trajectory,
     const rclcpp::Time & publication_time);
@@ -65,6 +68,7 @@ class MppiRosRuntime {
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr raceline_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr left_boundary_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr right_boundary_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr obstacle_costmap_publisher_;
   rclcpp::TimerBase::SharedPtr solve_timer_;
   rclcpp::TimerBase::SharedPtr control_publication_timer_;
   rclcpp::TimerBase::SharedPtr info_log_timer_;
@@ -80,10 +84,14 @@ class MppiRosRuntime {
   std::uint64_t published_solution_generation_{};
   std::chrono::nanoseconds visualization_period_{};
   std::chrono::steady_clock::time_point next_visualization_time_{};
+  std::chrono::steady_clock::time_point next_costmap_time_{};
   std::mutex visualization_mutex_;
   std::condition_variable visualization_cv_;
   std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>>
   pending_visualization_;
+  std::optional<std::pair<std::shared_ptr<const ObstacleField>, rclcpp::Time>>
+  pending_obstacle_visualization_;
+  std::shared_ptr<const PlannedTrajectory> pending_info_;
   bool stop_visualization_{false};
   std::thread visualization_thread_;
 };
