@@ -6,7 +6,7 @@ with `-DXX_MPPI_CUDA_ARCHITECTURES=...` for a separate development GPU.
 On the JetPack 6.2.2 / Ubuntu 22.04 / ROS 2 Humble target:
 
 ```bash
-cd /path/to/nav_ws
+cd /path/to/fireball_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-up-to xx_mppi \
   --symlink-install \

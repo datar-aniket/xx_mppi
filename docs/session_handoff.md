@@ -183,7 +183,7 @@ engine evaluations per substep materially alter the 100 Hz budget.
 
 ## Implemented commits
 
-The development repository is `/home/aniket/Documents/nav_ws/src/xx_mppi`.
+The development repository is `/home/aniket/Documents/fireball_ws/src/xx_mppi`.
 At handoff, `origin/main` is at `8eef8b9`; local `main` contains the following
 five implementation commits plus the commit that adds this handoff document:
 

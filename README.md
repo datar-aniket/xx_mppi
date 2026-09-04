@@ -1,7 +1,7 @@
 # xxCar CUDA/TensorRT MPPI
 
 This package ports the tested EPIC MPPI controller architecture to ROS 2 Humble
-and Jetson Orin NX. It is a new implementation for `nav_ws`; EPIC is only the
+and Jetson Orin NX. It is a new implementation for `fireball_ws`; EPIC is only the
 behavioral reference. There are no perception, semantic-map, or online-mapping
 dependencies.
 
@@ -57,7 +57,7 @@ accepted ENU pose into continuous Frenet coordinates, and resets its warm start
 when the EKF reset counter changes:
 
 ```bash
-cd /home/aniket/Documents/nav_ws
+cd /home/aniket/Documents/fireball_ws
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install --packages-up-to xx_mppi \
   --cmake-args -DCMAKE_BUILD_TYPE=Release \
