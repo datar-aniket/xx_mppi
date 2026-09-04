@@ -35,6 +35,7 @@ add_library(xx_mppi_core SHARED
   src/obstacles/laser_deskew.cpp
   src/obstacles/pose_history.cpp
   src/obstacles/signed_distance_field.cpp
+  src/obstacles/temporal_obstacle_filter.cpp
   src/reference/raceline.cpp
 )
 target_include_directories(xx_mppi_core PUBLIC

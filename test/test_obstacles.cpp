@@ -5,6 +5,7 @@
 #include "xx_mppi/obstacles/pose_history.hpp"
 #include "xx_mppi/obstacles/laser_deskew.hpp"
 #include "xx_mppi/obstacles/signed_distance_field.hpp"
+#include "xx_mppi/obstacles/temporal_obstacle_filter.hpp"
 
 namespace xxcar::mppi {
 namespace {
@@ -67,6 +68,48 @@ TEST(SignedDistanceField, BilinearSamplingRejectsOutsideGrid) {
   SignedDistanceFieldBuilder builder(config);
   const auto field = builder.Build({Point2D{0.0F, 0.0F}}, {}, 10, 1);
   EXPECT_FLOAT_EQ(SampleSignedDistance(field, 10.0F, 0.0F, -0.25F), -0.25F);
+}
+
+TEST(TemporalObstacleFilter, ConfirmsAcrossConsecutiveNearbyUpdates) {
+  ObstacleConfig config;
+  config.confirmation_updates = 3U;
+  config.persistence_updates = 2U;
+  config.association_distance_m = 0.10F;
+  TemporalObstacleFilter filter(config);
+
+  EXPECT_TRUE(filter.Update({Point2D{1.00F, 2.00F}}).empty());
+  EXPECT_TRUE(filter.Update({Point2D{1.04F, 2.01F}}).empty());
+  const auto confirmed = filter.Update({Point2D{1.08F, 2.02F}});
+  ASSERT_EQ(confirmed.size(), 1U);
+  EXPECT_NEAR(confirmed.front().east_m, 1.08F, 1.0e-6F);
+}
+
+TEST(TemporalObstacleFilter, RetainsForExactlyConfiguredMissedUpdates) {
+  ObstacleConfig config;
+  config.confirmation_updates = 1U;
+  config.persistence_updates = 2U;
+  config.association_distance_m = 0.10F;
+  TemporalObstacleFilter filter(config);
+
+  ASSERT_EQ(filter.Update({Point2D{1.0F, 2.0F}}).size(), 1U);
+  EXPECT_EQ(filter.Update({}).size(), 1U);
+  EXPECT_EQ(filter.Update({}).size(), 1U);
+  EXPECT_TRUE(filter.Update({}).empty());
+  EXPECT_EQ(filter.track_count(), 0U);
+}
+
+TEST(TemporalObstacleFilter, UnconfirmedTrackRequiresConsecutiveUpdates) {
+  ObstacleConfig config;
+  config.confirmation_updates = 2U;
+  config.persistence_updates = 4U;
+  TemporalObstacleFilter filter(config);
+
+  EXPECT_TRUE(filter.Update({Point2D{1.0F, 2.0F}}).empty());
+  EXPECT_TRUE(filter.Update({}).empty());
+  EXPECT_TRUE(filter.Update({Point2D{1.0F, 2.0F}}).empty());
+  EXPECT_EQ(filter.Update({Point2D{1.0F, 2.0F}}).size(), 1U);
+  filter.Clear();
+  EXPECT_EQ(filter.track_count(), 0U);
 }
 
 TEST(LaserDeskew, UsesPerRayPoseAndStaticExtrinsic) {

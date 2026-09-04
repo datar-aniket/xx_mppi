@@ -3,6 +3,7 @@
 #include <cmath>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -115,6 +116,7 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
     pose_history_ = std::make_unique<PoseHistory>(
       obstacle_config.pose_history_s, obstacle_config.maximum_extrapolation_s);
     field_builder_ = std::make_unique<SignedDistanceFieldBuilder>(obstacle_config);
+    temporal_obstacle_filter_ = std::make_unique<TemporalObstacleFilter>(obstacle_config);
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
     const auto scan_qos = rclcpp::SensorDataQoS().keep_last(
@@ -267,6 +269,7 @@ std::optional<RigidTransform2D> MppiNode::GetLaserToBaseTransform(
 }
 
 void MppiNode::ObstacleWorker() {
+  std::uint64_t temporal_epoch = std::numeric_limits<std::uint64_t>::max();
   while (true) {
     sensor_msgs::msg::LaserScan::ConstSharedPtr message;
     {
@@ -303,16 +306,31 @@ void MppiNode::ObstacleWorker() {
         "Dropping scan: pose history does not cover its ray timestamps");
       continue;
     }
-    auto field = std::make_shared<ObstacleField>(field_builder_->Build(
-        deskewed->obstacle_points, deskewed->reference_pose,
-        deskewed->reference_stamp_ns, ++obstacle_generation_));
     {
       std::lock_guard<std::mutex> lock(pose_history_mutex_);
       if (history_snapshot.second != pose_epoch_) {
         continue;
       }
     }
-    runtime_->SetObstacleField(std::move(field));
+    if (temporal_epoch != history_snapshot.second) {
+      temporal_obstacle_filter_->Clear();
+      temporal_epoch = history_snapshot.second;
+    }
+    const auto persistent_obstacles = temporal_obstacle_filter_->Update(
+      deskewed->obstacle_points);
+    auto field = std::make_shared<ObstacleField>(field_builder_->Build(
+        persistent_obstacles, deskewed->reference_pose,
+        deskewed->reference_stamp_ns, ++obstacle_generation_));
+    {
+      std::lock_guard<std::mutex> lock(pose_history_mutex_);
+      if (history_snapshot.second != pose_epoch_) {
+        continue;
+      }
+      // Keep the epoch check and publication ordered with EKF reset. If a
+      // reset is waiting, it clears this field immediately after this lock;
+      // if it already happened, the stale generation is rejected above.
+      runtime_->SetObstacleField(std::move(field));
+    }
   }
 }
 

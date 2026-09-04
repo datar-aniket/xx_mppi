@@ -1,12 +1,20 @@
 enabled: true
 
-# Rebuilt from only the newest scan. The last complete field remains active if
-# scans stop; new scans replace it atomically rather than accumulating points.
+# Rebuilt atomically from confirmed world-space tracks. The last complete field
+# remains active if scans stop.
 grid_resolution_m: 0.05
 grid_width_m: 12.0
 grid_height_m: 12.0
 maximum_distance_m: 5.0
 obstacle_inflation_radius_m: 0.03
+
+# A return must match an existing world-space track in this many consecutive
+# completed scans before it enters the SDF. Once confirmed, it remains for this
+# many completed scan updates in which it is not matched. At 40 Hz, 4 updates
+# are 100 ms. Dropped/missing scans do not consume persistence.
+confirmation_updates: 2
+persistence_updates: 4
+association_distance_m: 0.10
 
 pose_history_s: 0.10
 maximum_extrapolation_s: 0.02

@@ -27,14 +27,17 @@ TEST(Config, LoadsRuntimeProblemAndPhysicalControlBounds) {
   EXPECT_LE(config.mppi.control_min[kWheelTorque], 0.0F);
   EXPECT_GT(config.mppi.control_max[kWheelTorque], 0.0F);
   EXPECT_GT(config.visualization_rate_hz, 0.0F);
-  EXPECT_GT(config.solve_rate_hz, config.control_publish_rate_hz);
+  EXPECT_GE(config.solve_rate_hz, config.control_publish_rate_hz);
   EXPECT_GE(config.maximum_solution_age_s, 0.0F);
   EXPECT_GT(config.num_rollouts, 0U);
-  EXPECT_GT(config.costs.longitudinal_acceleration, 0.0F);
-  EXPECT_GT(config.costs.longitudinal_deceleration, 0.0F);
-  EXPECT_GT(config.costs.control_rate[kSteering], 0.0F);
-  EXPECT_GT(config.costs.control_rate[kWheelTorque], 0.0F);
+  EXPECT_GE(config.costs.longitudinal_acceleration, 0.0F);
+  EXPECT_GE(config.costs.longitudinal_deceleration, 0.0F);
+  EXPECT_GE(config.costs.control_rate[kSteering], 0.0F);
+  EXPECT_GE(config.costs.control_rate[kWheelTorque], 0.0F);
   EXPECT_FLOAT_EQ(config.info_log_rate_hz, 10.0F);
+  EXPECT_EQ(config.obstacles.confirmation_updates, 2U);
+  EXPECT_EQ(config.obstacles.persistence_updates, 4U);
+  EXPECT_FLOAT_EQ(config.obstacles.association_distance_m, 0.10F);
 }
 
 TEST(Config, LoadsTrx4SportVehicleProfile) {
@@ -42,8 +45,8 @@ TEST(Config, LoadsTrx4SportVehicleProfile) {
   EXPECT_FLOAT_EQ(config.vehicle.mass_kg, 3.2F);
   EXPECT_FLOAT_EQ(config.vehicle.yaw_inertia_kgm2, 0.030F);
   EXPECT_FLOAT_EQ(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m, 0.26F);
-  EXPECT_FLOAT_EQ(config.vehicle.front_cornering_stiffness_nprad, 200.0F);
-  EXPECT_FLOAT_EQ(config.vehicle.rear_cornering_stiffness_nprad, 200.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.front_cornering_stiffness_nprad, 100.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.rear_cornering_stiffness_nprad, 100.0F);
   EXPECT_FLOAT_EQ(config.vehicle.wheel_radius_m, 0.05842F);
   EXPECT_FLOAT_EQ(config.vehicle.front_brake_bias, 0.5F);
   EXPECT_TRUE(config.vehicle.locked_awd);

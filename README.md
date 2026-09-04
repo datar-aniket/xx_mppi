@@ -48,8 +48,9 @@ solver callback.
 
 Obstacle avoidance consumes `/scan` in the `laser` frame, caches the static
 `base_link <- laser` transform, deskews each ray against 100 ms of accepted EKF
-pose history, and rebuilds a latest-scan-only signed distance field on a
-dedicated worker. The last complete field remains active if scans stop.
+pose history, confirms returns across configurable consecutive scans, and
+rebuilds a temporally persistent signed distance field on a dedicated worker.
+The last complete field remains active if scans stop.
 
 The runnable ROS node subscribes to `xxcar_msgs/msg/EkfState` on
 `ekf/state`, validates estimator/VESC status and sample freshness, projects each

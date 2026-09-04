@@ -196,6 +196,12 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   config.obstacles.obstacle_inflation_radius_m = GetOr(
     obstacle_yaml, "obstacle_inflation_radius_m",
     config.obstacles.obstacle_inflation_radius_m);
+  config.obstacles.confirmation_updates = GetOr(
+    obstacle_yaml, "confirmation_updates", config.obstacles.confirmation_updates);
+  config.obstacles.persistence_updates = GetOr(
+    obstacle_yaml, "persistence_updates", config.obstacles.persistence_updates);
+  config.obstacles.association_distance_m = GetOr(
+    obstacle_yaml, "association_distance_m", config.obstacles.association_distance_m);
   config.obstacles.pose_history_s = GetOr(
     obstacle_yaml, "pose_history_s", config.obstacles.pose_history_s);
   config.obstacles.maximum_extrapolation_s = GetOr(
@@ -409,6 +415,8 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     !(config.obstacles.pose_history_s > 0.0F) ||
     config.obstacles.maximum_extrapolation_s < 0.0F ||
     config.obstacles.obstacle_inflation_radius_m < 0.0F ||
+    config.obstacles.confirmation_updates == 0U ||
+    !(config.obstacles.association_distance_m > 0.0F) ||
     config.obstacles.distance_weight < 0.0F ||
     !(config.obstacles.influence_distance_m > 0.0F) ||
     config.obstacles.latch_threshold_m < 0.0F ||

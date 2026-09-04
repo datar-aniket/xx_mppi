@@ -11,11 +11,19 @@ velocity/sideslip/yaw-rate extrapolation permitted only for the configured
 short edge interval. A scan without complete timestamp coverage is dropped.
 
 Scan callbacks only replace a one-element pending slot. A dedicated worker
-deskews the newest scan, builds a rolling ENU signed Euclidean distance field,
-and atomically publishes the immutable result. If the worker is busy, older
-pending scans are discarded. Each completed scan replaces the previous field;
-points are never accumulated. If scans stop, the last complete field remains
-active. Cells outside the rolling field carry no observed-obstacle penalty.
+deskews the newest scan, updates world-space temporal tracks, builds a rolling
+ENU signed Euclidean distance field, and atomically publishes the immutable
+result. If the worker is busy, older pending scans are discarded. Each completed
+scan replaces the previous field using the confirmed and still-persistent track
+set. If scans stop, the last complete field remains active. Cells outside the
+rolling field carry no observed-obstacle penalty.
+
+Before SDF construction, returns are associated to world-space tracks within
+`association_distance_m`. A track enters the field only after
+`confirmation_updates` consecutive completed scans. A confirmed track survives
+`persistence_updates` completed scans without a match; missing or rejected scan
+messages do not age it. An EKF reset clears the active field immediately and
+causes the temporal tracks to be cleared before the next accepted scan.
 
 The default 12 m by 12 m, 5 cm grid contains 57,600 float cells (225 KiB). The
 CPU worker uses a linear-time two-pass distance transform. A new generation is
@@ -34,8 +42,8 @@ When `d < latch_threshold_m`, the rollout's obstacle latch remains active for
 the rest of the horizon and adds `latching_weight / (T + 1)` per state, matching
 the existing sideslip-latch behavior. Parameters are in `config/obstacle.yaml`.
 
-The field models only currently visible scan returns as static obstacles. It
-does not infer occluded space or predict obstacle motion.
+The field models confirmed scan returns as static obstacles for their configured
+persistence window. It does not infer occluded space or predict obstacle motion.
 
 Benchmark the default field builder independently on the Orin with:
 

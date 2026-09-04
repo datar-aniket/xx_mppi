@@ -161,6 +161,9 @@ struct ObstacleConfig {
   float grid_height_m{12.0F};
   float maximum_distance_m{5.0F};
   float obstacle_inflation_radius_m{0.03F};
+  std::uint32_t confirmation_updates{2U};
+  std::uint32_t persistence_updates{4U};
+  float association_distance_m{0.10F};
   float pose_history_s{0.10F};
   float maximum_extrapolation_s{0.02F};
   float distance_weight{500.0F};

@@ -16,6 +16,7 @@
 
 #include "xx_mppi/obstacles/laser_deskew.hpp"
 #include "xx_mppi/obstacles/signed_distance_field.hpp"
+#include "xx_mppi/obstacles/temporal_obstacle_filter.hpp"
 #include "xx_mppi/ros/ekf_state_adapter.hpp"
 #include "xx_mppi/ros/runtime.hpp"
 
@@ -47,6 +48,7 @@ class MppiNode : public rclcpp::Node {
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::unique_ptr<PoseHistory> pose_history_;
   std::unique_ptr<SignedDistanceFieldBuilder> field_builder_;
+  std::unique_ptr<TemporalObstacleFilter> temporal_obstacle_filter_;
   std::mutex pose_history_mutex_;
   std::uint64_t pose_epoch_{};
   std::mutex scan_mutex_;
