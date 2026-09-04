@@ -28,6 +28,11 @@ publishes only the newest completed solution at
 `control_publish_rate_hz: 25`. `maximum_solution_age_s` prevents a delayed
 timer from emitting a stale command.
 
+Solver information is published independently at 10 Hz on `xx_mppi/info` as a
+best-effort `diagnostic_msgs/msg/DiagnosticArray`. It reports solve time,
+adaptive lambda and steering/torque sigmas, the command actually published,
+minimum cost, effective sample size, finite rollout count, and solution age.
+
 Optional RViz output publishes the expected/optimized horizon as
 `nav_msgs/Path`, the best-weighted sampled rollouts as
 `visualization_msgs/MarkerArray`, and transient-local raceline and left/right

@@ -135,6 +135,12 @@ mapping or clamp. Safety/output defaults, including
 `require_solution_validity: true`, are loaded from `mppi.yaml`; explicit ROS
 parameters override them. No UART message is published by `xx_mppi`.
 
+The last successfully published solution is also reported at 10 Hz on
+`xx_mppi/info` as a best-effort `diagnostic_msgs/msg/DiagnosticArray`. It
+contains solve time, adaptive lambda and steering/torque sigmas, the published
+physical steering/torque command, minimum cost, ESS, finite rollout count, and
+solution age. `info_publish_rate_hz` and `info_topic` are set in `mppi.yaml`.
+
 Optional visualization (`publish_visualization:=true`) publishes the expected
 horizon as `nav_msgs/Path`, the best-weighted sampled rollouts as
 `visualization_msgs/MarkerArray`, plus latched raceline, positive-`e` left

@@ -1291,6 +1291,7 @@ class CudaMppiController::Impl {
     solution.diagnostics.minimum_cost = minimum;
     solution.diagnostics.effective_sample_size = ess;
     solution.diagnostics.lambda_used = config_.lambda;
+    solution.diagnostics.sigma_used = config_.sigma;
     solution.diagnostics.solve_time_ms = elapsed_ms;
     solution.diagnostics.finite_rollouts = finite_count;
 

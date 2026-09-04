@@ -10,6 +10,7 @@
 
 #include "xx_mppi/controller/config.hpp"
 #include "xx_mppi/reference/raceline.hpp"
+#include "xx_mppi/ros/diagnostics_message.hpp"
 #include "xx_mppi/ros/direct_control_message.hpp"
 #include "xx_mppi/ros/runtime_config.hpp"
 #include "xx_mppi/ros/trajectory_message.hpp"
@@ -34,6 +35,8 @@ TEST(Config, LoadsRuntimeProblemAndPhysicalControlBounds) {
   EXPECT_GT(config.costs.longitudinal_deceleration, 0.0F);
   EXPECT_GT(config.costs.control_rate[kSteering], 0.0F);
   EXPECT_GT(config.costs.control_rate[kWheelTorque], 0.0F);
+  EXPECT_FLOAT_EQ(config.info_publish_rate_hz, 10.0F);
+  EXPECT_FALSE(config.info_topic.empty());
 }
 
 TEST(Config, LoadsTrx4SportVehicleProfile) {
@@ -176,6 +179,30 @@ TEST(RosMessage, PreservesTimestampAndTTAlignment) {
   EXPECT_FLOAT_EQ(message.states[1].x_m, 3.0F);
   EXPECT_FLOAT_EQ(message.controls[1].steering_angle_rad, -0.2F);
   EXPECT_FLOAT_EQ(message.controls[1].torque_nm, -2.0F);
+}
+
+TEST(RosMessage, PublishesNamedMppiDiagnosticsAndCurrentCommand) {
+  PlannedTrajectory trajectory;
+  trajectory.solution_pose_time_ns = 2'000'000'000LL;
+  trajectory.controls = {Control{{0.12F, -0.34F}}};
+  trajectory.diagnostics.solve_time_ms = 4.5F;
+  trajectory.diagnostics.lambda_used = 3.0F;
+  trajectory.diagnostics.sigma_used = {0.08F, 0.2F};
+  trajectory.diagnostics.minimum_cost = 12.0F;
+  trajectory.diagnostics.effective_sample_size = 20.0F;
+  trajectory.diagnostics.finite_rollouts = 2001U;
+
+  const auto message = ToDiagnosticsMessage(trajectory, rclcpp::Time(2'010'000'000LL));
+  ASSERT_EQ(message.status.size(), 1U);
+  EXPECT_EQ(message.status.front().level, 0U);
+  EXPECT_EQ(message.status.front().name, "xx_mppi/solver");
+  ASSERT_EQ(message.status.front().values.size(), 10U);
+  EXPECT_EQ(message.status.front().values[0U].key, "solve_time_ms");
+  EXPECT_FLOAT_EQ(std::stof(message.status.front().values[0U].value), 4.5F);
+  EXPECT_EQ(message.status.front().values[2U].key, "steering_sigma_rad");
+  EXPECT_FLOAT_EQ(std::stof(message.status.front().values[4U].value), 0.12F);
+  EXPECT_FLOAT_EQ(std::stof(message.status.front().values[5U].value), -0.34F);
+  EXPECT_FLOAT_EQ(std::stof(message.status.front().values[9U].value), 10.0F);
 }
 
 TEST(DirectControlMessage, UsesFirstControlAndPidLanekeepingTwistFields) {

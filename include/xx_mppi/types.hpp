@@ -192,6 +192,7 @@ struct MppiDiagnostics {
   float minimum_cost{std::numeric_limits<float>::infinity()};
   float effective_sample_size{};
   float lambda_used{};
+  std::array<float, kControlDim> sigma_used{};
   float solve_time_ms{};
   std::uint32_t finite_rollouts{};
 };

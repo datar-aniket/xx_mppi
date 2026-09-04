@@ -73,6 +73,26 @@ The physical derivative costs are configured in `weights.yaml`:
 These are evaluated identically by the CPU reference evaluator, analytic CUDA
 rollouts, and TensorRT-neural CUDA rollouts.
 
+## Solver information
+
+The latest successfully published control solution is reported at
+`info_publish_rate_hz` (10 Hz by default) on `info_topic` (`xx_mppi/info`) as a
+best-effort `diagnostic_msgs/msg/DiagnosticArray`. The named values are:
+
+- `solve_time_ms`, `lambda`, `steering_sigma_rad`, and
+  `wheel_torque_sigma_nm`;
+- `steering_command_rad` and `wheel_torque_command_nm` in MPPI physical units;
+- `minimum_cost`, `effective_sample_size`, `finite_rollouts`, and
+  `solution_age_ms`.
+
+The command fields come from the solution that was actually sent by the control
+publisher, rather than a newer unpublished solve. Inspect it with:
+
+```bash
+ros2 topic echo /xx_mppi/info
+ros2 topic hz /xx_mppi/info
+```
+
 ## Direct control output
 
 Set `publish_direct_control: true` in `config/mppi.yaml`, or override it with

@@ -111,6 +111,9 @@ selects the newest completed solution and never republishes an older
 generation. A publication-time age guard drops delayed solutions. This permits
 high-rate optimization without increasing the downstream actuator command
 rate or falsely recording an unpublished command as control feedback.
+An independent 10 Hz diagnostics timer reports a shared immutable snapshot of
+the last successfully published solution without recalculating or copying the
+rollout population.
 
 The robustness costs retained from EPIC include own-`s` speed and boundary
 lookup, boundary ramp, latched discounted crash cost, sideslip shaping and a

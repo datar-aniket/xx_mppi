@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "xx_mppi/controller/builder.hpp"
+#include "xx_mppi/ros/diagnostics_message.hpp"
 #include "xx_mppi/ros/direct_control_message.hpp"
 #include "xx_mppi/ros/trajectory_message.hpp"
 
@@ -73,10 +74,20 @@ MppiRosRuntime::MppiRosRuntime(
   control_publication_timer_ = node_.create_wall_timer(
     std::chrono::nanoseconds(publication_period_ns),
     [this]() {ControlPublicationCallback();});
+  info_publisher_ = node_.create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+    controller_->config().info_topic, rclcpp::QoS(1).best_effort());
+  const auto info_period_ns = static_cast<std::int64_t>(std::llround(
+      1.0e9 / static_cast<double>(controller_->config().info_publish_rate_hz)));
+  info_publication_timer_ = node_.create_wall_timer(
+    std::chrono::nanoseconds(info_period_ns), [this]() {InfoPublicationCallback();});
   RCLCPP_INFO(
     node_.get_logger(), "MPPI solve rate %.3f Hz, control publication rate %.3f Hz",
     static_cast<double>(controller_->config().solve_rate_hz),
     static_cast<double>(controller_->config().control_publish_rate_hz));
+  RCLCPP_INFO(
+    node_.get_logger(), "MPPI diagnostics publishing at %.3f Hz on '%s'",
+    static_cast<double>(controller_->config().info_publish_rate_hz),
+    controller_->config().info_topic.c_str());
   if (controller_->config().control_publish_rate_hz > controller_->config().solve_rate_hz) {
     RCLCPP_WARN(
       node_.get_logger(),
@@ -212,6 +223,7 @@ void MppiRosRuntime::Reset() {
   {
     std::lock_guard<std::mutex> solution_lock(solution_mutex_);
     latest_solution_.reset();
+    published_solution_.reset();
     latest_solution_generation_ = 0U;
     published_solution_generation_ = 0U;
   }
@@ -319,6 +331,25 @@ void MppiRosRuntime::ControlPublicationCallback() {
     // solution actually sent so that the newer one remains eligible.
     published_solution_generation_ = std::max(
       published_solution_generation_, generation);
+    published_solution_ = std::move(solution);
+  }
+}
+
+void MppiRosRuntime::InfoPublicationCallback() {
+  std::shared_ptr<const PlannedTrajectory> solution;
+  {
+    std::lock_guard<std::mutex> lock(solution_mutex_);
+    solution = published_solution_;
+  }
+  if (!solution) {
+    return;
+  }
+  try {
+    info_publisher_->publish(ToDiagnosticsMessage(*solution, node_.get_clock()->now()));
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR_THROTTLE(
+      node_.get_logger(), *node_.get_clock(), 1000,
+      "MPPI diagnostics publication failed: %s", error.what());
   }
 }
 

@@ -175,6 +175,9 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     mppi_yaml, "control_publish_rate_hz", config.control_publish_rate_hz);
   config.maximum_solution_age_s = GetOr(
     mppi_yaml, "maximum_solution_age_s", config.maximum_solution_age_s);
+  config.info_publish_rate_hz = GetOr(
+    mppi_yaml, "info_publish_rate_hz", config.info_publish_rate_hz);
+  config.info_topic = GetOr(mppi_yaml, "info_topic", config.info_topic);
   config.visualization_rate_hz = GetOr(
     mppi_yaml, "visualization_rate_hz", config.visualization_rate_hz);
   config.num_rollouts = GetOr(mppi_yaml, "num_rollouts", config.num_rollouts);
@@ -325,6 +328,8 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     !std::isfinite(config.control_publish_rate_hz) ||
     !(config.maximum_solution_age_s >= 0.0F) ||
     !std::isfinite(config.maximum_solution_age_s) ||
+    !(config.info_publish_rate_hz > 0.0F) ||
+    !std::isfinite(config.info_publish_rate_hz) || config.info_topic.empty() ||
     !(config.visualization_rate_hz > 0.0F) ||
     !std::isfinite(config.visualization_rate_hz) ||
     config.num_rollouts == 0U || config.num_rollouts > config.mppi.num_samples ||
