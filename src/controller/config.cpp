@@ -171,6 +171,10 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     mppi_yaml, "expected_trajectory", config.mppi.expected_trajectory);
   config.mppi.seed = GetOr(mppi_yaml, "seed", config.mppi.seed);
   config.solve_rate_hz = GetOr(mppi_yaml, "solve_rate_hz", config.solve_rate_hz);
+  config.control_publish_rate_hz = GetOr(
+    mppi_yaml, "control_publish_rate_hz", config.control_publish_rate_hz);
+  config.maximum_solution_age_s = GetOr(
+    mppi_yaml, "maximum_solution_age_s", config.maximum_solution_age_s);
   config.visualization_rate_hz = GetOr(
     mppi_yaml, "visualization_rate_hz", config.visualization_rate_hz);
   config.num_rollouts = GetOr(mppi_yaml, "num_rollouts", config.num_rollouts);
@@ -301,12 +305,26 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     smoothness, "steering_angle_rad", config.costs.control_smoothness[kSteering]);
   config.costs.control_smoothness[kWheelTorque] = GetOr(
     smoothness, "wheel_torque_nm", config.costs.control_smoothness[kWheelTorque]);
+  const auto acceleration = weights_yaml["longitudinal_acceleration"];
+  config.costs.longitudinal_acceleration = GetOr(
+    acceleration, "acceleration_weight", config.costs.longitudinal_acceleration);
+  config.costs.longitudinal_deceleration = GetOr(
+    acceleration, "deceleration_weight", config.costs.longitudinal_deceleration);
+  const auto control_rate = weights_yaml["control_rate"];
+  config.costs.control_rate[kSteering] = GetOr(
+    control_rate, "steering_velocity_radps", config.costs.control_rate[kSteering]);
+  config.costs.control_rate[kWheelTorque] = GetOr(
+    control_rate, "wheel_torque_rate_nmps", config.costs.control_rate[kWheelTorque]);
 
   if (config.mppi.num_samples <= 3U || config.mppi.horizon == 0U ||
     config.mppi.horizon == std::numeric_limits<std::uint16_t>::max() ||
     !(config.mppi.dt_s > 0.0F) || !std::isfinite(config.mppi.dt_s) ||
     !(config.mppi.lambda > 0.0F) || !std::isfinite(config.mppi.lambda) ||
     !(config.solve_rate_hz > 0.0F) || !std::isfinite(config.solve_rate_hz) ||
+    !(config.control_publish_rate_hz > 0.0F) ||
+    !std::isfinite(config.control_publish_rate_hz) ||
+    !(config.maximum_solution_age_s >= 0.0F) ||
+    !std::isfinite(config.maximum_solution_age_s) ||
     !(config.visualization_rate_hz > 0.0F) ||
     !std::isfinite(config.visualization_rate_hz) ||
     config.num_rollouts == 0U || config.num_rollouts > config.mppi.num_samples ||
@@ -324,7 +342,8 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
       !std::isfinite(config.mppi.control_max[i]) ||
       !std::isfinite(config.mppi.sigma[i]) ||
       !(config.mppi.control_min[i] < config.mppi.control_max[i]) ||
-      !(config.mppi.sigma[i] > 0.0F))
+      !(config.mppi.sigma[i] > 0.0F) ||
+      !std::isfinite(config.costs.control_rate[i]) || config.costs.control_rate[i] < 0.0F)
     {
       throw std::runtime_error("invalid control bounds or sampling sigma");
     }
@@ -333,6 +352,10 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     !(config.costs.crash_discount > 0.0F && config.costs.crash_discount <= 1.0F) ||
     !(config.costs.maximum_sideslip_rad > 0.0F) ||
     !(config.costs.wheel_slip_band >= 0.0F) ||
+    !std::isfinite(config.costs.longitudinal_acceleration) ||
+    !std::isfinite(config.costs.longitudinal_deceleration) ||
+    config.costs.longitudinal_acceleration < 0.0F ||
+    config.costs.longitudinal_deceleration < 0.0F ||
     !(config.vehicle.mass_kg > 0.0F) || !(config.vehicle.yaw_inertia_kgm2 > 0.0F) ||
     !(config.vehicle.wheel_radius_m > 0.0F) ||
     !(config.vehicle.driven_wheel_inertia_kgm2 > 0.0F) ||

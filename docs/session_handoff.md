@@ -28,19 +28,20 @@ Requirements agreed during the session:
 - Keep the structure and terminology close to EPIC where practical:
   `MppiController`, builder, raceline, map boundary, integrator, models, and
   frames.
-- Use real control units: steering in radians with bounds `[-0.5, 0.5]`, and
-  total wheel-side torque in Nm with provisional bounds `[-5, 5]`.
+- Use real control units: steering in radians and total wheel-side torque in
+  Nm, with bounds supplied by `mppi.yaml`.
 - Keep both kinematic bicycle and dynamic Fiala models. Use Fiala initially.
 - Later support a PyTorch neural model that outputs the same four body-state
   derivatives as the EPIC learned model. C++/CUDA retains integration and path
   dynamics.
-- Default MPPI problem: `K=2001`, `T=50`, `dt=0.1 s`; target at least 100 Hz on
-  the Orin NX.
+- Current MPPI problem: `K=2001`, `T=35`, `dt=0.1 s`; solve and control
+  publication rates are configured independently.
 - Runtime YAML changes, including sample count, do not require recompilation.
   Restart the node so it reloads the configuration and reallocates buffers.
-- The controller publishes a ROS trajectory by default. An explicit direct
-  mode can instead publish the first optimized command as a
-  `geometry_msgs/msg/Twist`; `ekf_mcu_driver` still owns MCU/UART communication.
+- The controller supports ROS trajectory output and direct first-command
+  output; the checked-in configuration currently selects direct
+  `geometry_msgs/msg/Twist` publication. `ekf_mcu_driver` still owns MCU/UART
+  communication.
 - Make small, tested changes and commit each feature so development remains
   traceable.
 
@@ -100,12 +101,9 @@ default. The adapter maps:
 - `linear_acceleration.x` to longitudinal acceleration;
 - side slip, wheel torque, steering, and motor speed to their controller fields.
 
-The adapter supports these calibration parameters:
-
-- `steering_scale_to_rad`;
-- `steering_offset_rad`;
-- `torque_scale_to_nm`;
-- `motor_speed_scale_to_mps`.
+The steering, torque, and motor-speed fields are already expressed in the model's
+physical units and are copied without scaling or offset. With measured control
+feedback enabled, the first-step smoothness/rate cost uses those exact values.
 
 The default safety gate requires attitude, horizontal velocity, horizontal
 position, absolute yaw, estimator source, gyro source, VESC source, a valid
@@ -319,20 +317,11 @@ Orin with `K=1001, T=40`: 8.8 ms per solve in `frenet`, 13.7 ms in `cartesian`,
 and the two frames' published paths agree within 0.1-0.2 m over the full-lap
 horizon.
 
-What is actually wrong is the signal conversion between `EkfState` and the
-controller, which is blocker 3 below and was never done:
-
-- `steering_angle` spans `0 .. 2.4` with no zero crossing, `wheel_torque_nm`
-  spans `-55 .. 46`, and `motor_speed_ms` peaks near `1.7` while the vehicle is
-  doing `3.3 m/s`. With the default unit scales the measured steering and torque
-  clamp to a control bound every cycle; at steady state that warm start shifts
-  the first optimized steering command by about 0.23 rad, so
-  `observation.use_measured_control_feedback` now defaults to false.
-- Regressing `r / V` against `steering_angle` gives a negative slope in both
-  recorded bags, and `PID_lanekeeping` compensates for the same hardware with
-  `invert_steering: true`. `direct_control_steering_scale` (default `1.0`) now
-  makes that inversion configurable; set it to `-1.0` once confirmed on the
-  bench.
+The current `xxcar_msgs/EkfState` contract provides steering radians, wheel
+torque Nm, and motor speed m/s. The adapter passes all three through unchanged,
+and `observation.use_measured_control_feedback` is enabled. Direct command
+mapping remains separately configurable because it belongs to the downstream
+actuator interface, not the EKF feedback path.
 - `side_slip_rad` is exactly `atan2(v_y, v_x)` of the reported body twist and
   reaches 2.7 rad in recorded runs. That is the cause of the reported
   "path goes backward then forward": the projection's relative course heading is
@@ -370,10 +359,9 @@ weights.
 2. Replace the sample `config/raceline.csv` with the surveyed EPIC-format
    vehicle raceline, or select an external production config directory. The
    included circle is only for bench and ROS pipeline testing.
-3. Confirm the EKF/VESC field units on the actual MCU pipeline. In particular,
-   calibrate steering to radians, torque to wheel-side Nm, and motor speed to
-   m/s using driver constants (`VESC_STEER_K`, `VESC_TORQUE_K`,
-   `VESC_SPEED_K`) or the equivalent ROS parameters.
+3. Confirm on a stationary bench test that the EKF feedback signs agree with
+   positive-left steering and positive drive torque; the adapter intentionally
+   performs no unit scale or offset.
 4. Run the CUDA benchmark on the Orin after warm-up in the intended Jetson power
    mode. The 100 Hz target requires p99 solve time below 10 ms; it has not yet
    been demonstrated on the vehicle hardware.

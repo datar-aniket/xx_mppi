@@ -30,21 +30,15 @@ MppiController::MppiController(ControllerConfig config, Raceline raceline)
 {
 }
 
-// Warm-start reference for the control-smoothness cost. The measured VESC
-// channels are raw actuator units unless the adapter scales are calibrated, so
-// clamping them into the control bounds would silently pin the first command
-// at a bound; the controller's own last command is the safe default.
+// Warm-start reference for control smoothness/rate costs. EkfState provides
+// radians and newton-metres already, so preserve the feedback exactly. An
+// out-of-bound measured actuator state is meaningful: the first feasible
+// candidate should pay the actual transition back into the admissible range.
 Control MppiController::PreviousControl(const VehicleObservation & observation) const {
   if (!config_.use_measured_control_feedback) {
     return last_applied_control_;
   }
-  return Control{{
-    std::clamp(
-      observation.measured_steering_rad,
-      config_.mppi.control_min[kSteering], config_.mppi.control_max[kSteering]),
-    std::clamp(
-      observation.measured_torque_nm,
-      config_.mppi.control_min[kWheelTorque], config_.mppi.control_max[kWheelTorque])}};
+  return Control{{observation.measured_steering_rad, observation.measured_torque_nm}};
 }
 
 Projection MppiController::UpdateObservation(const VehicleObservation & observation) {
@@ -128,12 +122,15 @@ PlannedTrajectory MppiController::PlanLatest(
   }
   result.sampled_rollouts = std::move(solution.sampled_rollouts);
 
-  if (!result.controls.empty()) {
-    last_applied_control_ = result.controls.front();
-  }
   previous_pose_time_ns_ = observation.pose_time_ns;
   reset_next_ = false;
   return result;
+}
+
+void MppiController::RecordPublishedControl(const Control & control) noexcept {
+  if (std::isfinite(control[kSteering]) && std::isfinite(control[kWheelTorque])) {
+    last_applied_control_ = control;
+  }
 }
 
 PlannedTrajectory MppiController::Plan(

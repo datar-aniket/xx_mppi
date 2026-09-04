@@ -8,7 +8,7 @@ namespace xxcar::mppi {
 
 class CostEvaluator {
  public:
-  explicit CostEvaluator(CostWeights weights) : weights_(weights) {}
+  CostEvaluator(CostWeights weights, float dt_s);
 
   [[nodiscard]] float Evaluate(
     const std::vector<State> & states, const std::vector<Control> & controls,
@@ -21,6 +21,7 @@ class CostEvaluator {
     const std::vector<float> & s_grid, const std::vector<float> & values, float s);
 
   CostWeights weights_;
+  float dt_s_;
 };
 
 }  // namespace xxcar::mppi

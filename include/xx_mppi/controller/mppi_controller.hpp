@@ -71,6 +71,10 @@ class MppiController {
   [[nodiscard]] PlannedTrajectory Plan(
     const VehicleObservation & observation,
     std::uint32_t num_visualization_rollouts = 0U);
+  // Called only after the ROS command publisher accepts a solution. This keeps
+  // the fallback feedback aligned with what left the controller, not merely
+  // with the newest (possibly downsampled) solve.
+  void RecordPublishedControl(const Control & control) noexcept;
   void Reset() noexcept;
 
   [[nodiscard]] const ControllerConfig & config() const noexcept { return config_; }

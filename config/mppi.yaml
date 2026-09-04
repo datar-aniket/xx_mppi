@@ -4,6 +4,8 @@ num_samples: 2001
 horizon: 35
 dt: 0.1
 solve_rate_hz: 50.0
+control_publish_rate_hz: 25.0  # publish only the newest completed solution
+maximum_solution_age_s: 0.1    # zero disables the stale-command guard
 visualization_rate_hz: 20.0  # reduced-rate RViz publishing and rollout snapshots
 num_rollouts: 15             # number of best-weighted sampled rollouts to draw
 # Rollout frame. frenet integrates (e, dphi, s) against the raceline curvature;
@@ -20,7 +22,7 @@ lambda: 2.0
 seed: 0
 
 # ROS safety and control-output defaults. ROS parameters can override these.
-require_solution_validity: false
+require_solution_validity: true
 publish_direct_control: true
 direct_control_topic: cmd_vel
 control_mode: duty_cycle  # duty_cycle maps/clamps torque; torque passes torque unchanged
@@ -33,10 +35,8 @@ direct_control_steering_scale: -4.5
 direct_control_steering_limit_rad: 1.0
 
 observation:
-  # The VESC feedback channels in EkfState arrive in raw actuator units. Leave
-  # this false until steering_scale_to_rad / steering_offset_rad / torque_scale_to_nm
-  # are calibrated, otherwise the warm start clamps to a control bound and the
-  # control-smoothness cost drags the first command there.
+  # EkfState steering [rad], wheel torque [N m], and motor speed [m/s] are copied
+  # without scaling. Use measured feedback for the first control transition.
   use_measured_control_feedback: true
   # Largest sideslip the body model and sideslip costs may see. Projection still
   # uses the full measured course heading.

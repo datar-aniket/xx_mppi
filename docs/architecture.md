@@ -80,16 +80,15 @@ for the same hardware with its `invert_steering` parameter.
 
 ## Observation conditioning
 
-`EkfState` carries the VESC channels in raw actuator units until
-`steering_scale_to_rad`, `steering_offset_rad`, `torque_scale_to_nm` and
-`motor_speed_scale_to_mps` are calibrated. Two guards keep an uncalibrated
-stream from steering the solve:
+`EkfState` carries steering in radians, wheel torque in newton-metres, and motor
+peripheral speed in metres per second. The adapter copies those values without
+scaling so the same physical units reach the model and the first-step rate
+cost. Two guards condition the observation:
 
-- `observation.use_measured_control_feedback` (default `false`) makes the
-  control-smoothness warm start use the controller's own last applied command.
-  With the raw feedback the warm start clamps to a control bound every cycle,
-  and the smoothness weight then drags the first optimized command toward that
-  bound.
+- `observation.use_measured_control_feedback` (default `true`) makes the
+  control smoothness and physical rate costs start from the measured actuator
+  state. If disabled, they start from the last command actually published (not
+  merely the last solution computed).
 - `observation.maximum_model_sideslip_rad` bounds the sideslip through
   `ConditionedSideslip`, which the projection and the body model both call, so
   the two never disagree about the vehicle's course. The bound matters
@@ -106,10 +105,18 @@ warm-start/reference/braking special samples, clips in physical units, rolls out
 all samples, and computes robust softmax weights. Non-finite rollouts are assigned
 the worst finite cost; an all-invalid population falls back to uniform weights.
 
+The ROS runtime runs solve and publication timers independently. A solve is
+performed only when a new EKF generation is available; the publication timer
+selects the newest completed solution and never republishes an older
+generation. A publication-time age guard drops delayed solutions. This permits
+high-rate optimization without increasing the downstream actuator command
+rate or falsely recording an unpublished command as control feedback.
+
 The robustness costs retained from EPIC include own-`s` speed and boundary
 lookup, boundary ramp, latched discounted crash cost, sideslip shaping and a
 latched kill threshold, lateral damping, wheel-slip cost, progress, effort, and
-control smoothness. The crash and sideslip latches start at the first
+control smoothness, asymmetric longitudinal acceleration/deceleration, steering
+velocity, and wheel-torque rate. The crash and sideslip latches start at the first
 integrated state rather than at the initial state, which every sample shares:
 latching there would set the same flag across the whole population and remove
 all boundary discrimination from the solve. Online lambda and diagonal-sigma adaptation use effective

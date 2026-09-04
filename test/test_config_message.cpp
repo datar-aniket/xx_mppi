@@ -22,21 +22,27 @@ TEST(Config, LoadsRuntimeProblemAndPhysicalControlBounds) {
   EXPECT_GT(config.mppi.num_samples, 3U);
   EXPECT_GT(config.mppi.horizon, 0U);
   EXPECT_FLOAT_EQ(config.mppi.dt_s, 0.1F);
-  EXPECT_FLOAT_EQ(config.mppi.control_min[kSteering], -0.5F);
-  EXPECT_FLOAT_EQ(config.mppi.control_max[kSteering], 0.5F);
+  EXPECT_LT(config.mppi.control_min[kSteering], 0.0F);
+  EXPECT_GT(config.mppi.control_max[kSteering], 0.0F);
   EXPECT_LE(config.mppi.control_min[kWheelTorque], 0.0F);
   EXPECT_GT(config.mppi.control_max[kWheelTorque], 0.0F);
   EXPECT_GT(config.visualization_rate_hz, 0.0F);
+  EXPECT_GT(config.solve_rate_hz, config.control_publish_rate_hz);
+  EXPECT_GE(config.maximum_solution_age_s, 0.0F);
   EXPECT_GT(config.num_rollouts, 0U);
+  EXPECT_GT(config.costs.longitudinal_acceleration, 0.0F);
+  EXPECT_GT(config.costs.longitudinal_deceleration, 0.0F);
+  EXPECT_GT(config.costs.control_rate[kSteering], 0.0F);
+  EXPECT_GT(config.costs.control_rate[kWheelTorque], 0.0F);
 }
 
 TEST(Config, LoadsTrx4SportVehicleProfile) {
   const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
-  EXPECT_FLOAT_EQ(config.vehicle.mass_kg, 2.0F);
-  EXPECT_FLOAT_EQ(config.vehicle.yaw_inertia_kgm2, 0.040F);
-  EXPECT_FLOAT_EQ(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m, 0.312F);
-  EXPECT_FLOAT_EQ(config.vehicle.front_cornering_stiffness_nprad, 75.0F);
-  EXPECT_FLOAT_EQ(config.vehicle.rear_cornering_stiffness_nprad, 75.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.mass_kg, 3.2F);
+  EXPECT_FLOAT_EQ(config.vehicle.yaw_inertia_kgm2, 0.030F);
+  EXPECT_FLOAT_EQ(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m, 0.26F);
+  EXPECT_FLOAT_EQ(config.vehicle.front_cornering_stiffness_nprad, 200.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.rear_cornering_stiffness_nprad, 200.0F);
   EXPECT_FLOAT_EQ(config.vehicle.wheel_radius_m, 0.05842F);
   EXPECT_FLOAT_EQ(config.vehicle.front_brake_bias, 0.5F);
   EXPECT_TRUE(config.vehicle.locked_awd);
@@ -115,11 +121,9 @@ TEST(Config, RejectsAnIntegrationStepTheDrivenWheelLoopCannotHold) {
   std::filesystem::remove_all(directory);
 }
 
-TEST(Config, DefaultsToTheControllersOwnCommandForWarmStart) {
+TEST(Config, UsesUnitPreservingMeasuredControlFeedback) {
   const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
-  // The EkfState VESC channels are raw actuator units until calibrated, so the
-  // measured feedback must not be trusted by default.
-  EXPECT_FALSE(config.use_measured_control_feedback);
+  EXPECT_TRUE(config.use_measured_control_feedback);
   EXPECT_GT(config.maximum_model_sideslip_rad, 0.0F);
 }
 

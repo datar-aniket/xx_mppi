@@ -132,6 +132,11 @@ struct CostWeights {
   std::array<float, kStateDim> reference_tracking{};
   std::array<float, kControlDim> control_effort{1.0e-3F, 1.0e-4F};
   std::array<float, kControlDim> control_smoothness{1.0e4F, 1.0e-1F};
+  // Physical state/control-rate penalties. Acceleration and deceleration are
+  // separated so braking comfort can be tuned independently from propulsion.
+  float longitudinal_acceleration{0.0F};
+  float longitudinal_deceleration{0.0F};
+  std::array<float, kControlDim> control_rate{};
   float velocity_profile{30.0F};
   float velocity_overspeed_multiplier{4.0F};
   float progress{1.0F};

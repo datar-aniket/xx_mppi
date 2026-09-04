@@ -58,14 +58,6 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
   adapter_config_.require_absolute_yaw = declare_parameter<bool>(
     "require_absolute_yaw", true);
   adapter_config_.require_vesc = declare_parameter<bool>("require_vesc", true);
-  adapter_config_.steering_scale_to_rad = static_cast<float>(declare_parameter<double>(
-      "steering_scale_to_rad", 1.0));
-  adapter_config_.steering_offset_rad = static_cast<float>(declare_parameter<double>(
-      "steering_offset_rad", 0.0));
-  adapter_config_.torque_scale_to_nm = static_cast<float>(declare_parameter<double>(
-      "torque_scale_to_nm", 1.0));
-  adapter_config_.motor_speed_scale_to_mps = static_cast<float>(declare_parameter<double>(
-      "motor_speed_scale_to_mps", 1.0));
   const auto state_qos_depth = declare_parameter<int>("state_qos_depth", 1);
 
   VisualizationConfig visualization;
@@ -90,7 +82,7 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
   if (state_qos_depth <= 0) {
     throw std::invalid_argument("state_qos_depth must be positive");
   }
-  // Validate timing and scale parameters before opening the runtime.
+  // Validate timing and adapter parameters before opening the runtime.
   ValidateEkfStateAdapterConfig(adapter_config_);
   ValidateObservationTime(1, 1, std::nullopt, maximum_state_age_s_, future_tolerance_s_);
   if (direct_control.enabled) {

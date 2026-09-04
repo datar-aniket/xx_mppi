@@ -166,12 +166,40 @@ TEST(Costs, CrashedRolloutCostsMoreThanInBoundsRollout) {
   std::vector<State> safe = reference.states;
   std::vector<State> crashed = safe;
   crashed[2U][kLateralDeviation] = 2.0F;
-  const CostEvaluator evaluator(CostWeights{});
+  const CostEvaluator evaluator(CostWeights{}, 0.1F);
   const float safe_cost = evaluator.Evaluate(
     safe, reference.controls, reference, Control{});
   const float crashed_cost = evaluator.Evaluate(
     crashed, reference.controls, reference, Control{});
   EXPECT_GT(crashed_cost, safe_cost + 1000.0F);
+}
+
+TEST(Costs, AddsAsymmetricAccelerationAndPhysicalControlRatePenalties) {
+  const auto raceline = Raceline::LoadCsv(TestCsv());
+  auto reference = raceline.Sample(0.0F, 2U, 0.1F);
+  auto states = reference.states;
+  states[0U][kSpeed] = 1.0F;
+  states[1U][kSpeed] = 1.2F;  // +2 m/s^2
+  states[2U][kSpeed] = 0.9F;  // -3 m/s^2
+  std::vector<Control> controls{
+    Control{{0.1F, 0.2F}}, Control{{-0.1F, 0.1F}}};
+  const Control previous{{0.0F, 0.0F}};
+
+  CostWeights baseline_weights;
+  CostWeights rate_weights = baseline_weights;
+  rate_weights.longitudinal_acceleration = 2.0F;
+  rate_weights.longitudinal_deceleration = 3.0F;
+  rate_weights.control_rate[kSteering] = 0.5F;
+  rate_weights.control_rate[kWheelTorque] = 0.25F;
+  const CostEvaluator baseline(baseline_weights, 0.1F);
+  const CostEvaluator with_rates(rate_weights, 0.1F);
+
+  const float added = with_rates.Evaluate(states, controls, reference, previous) -
+    baseline.Evaluate(states, controls, reference, previous);
+  // acceleration: 2*2^2 + 3*3^2 = 35
+  // steering rate: .5*(1^2 + (-2)^2) = 2.5
+  // torque rate: .25*(2^2 + (-1)^2) = 1.25
+  EXPECT_NEAR(added, 38.75F, 1.0e-3F);
 }
 
 }  // namespace

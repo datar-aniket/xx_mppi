@@ -24,7 +24,8 @@ namespace xxcar::mppi {
 
 // Reusable ROS runtime beneath the final custom vehicle-state subscriber. The
 // adapter calls OnObservation from every message callback; this class projects
-// each update and publishes at the configured solve rate.
+// each update. Solving and command publication have independent rates; only
+// the newest completed, non-stale solution is published.
 class MppiRosRuntime {
  public:
   MppiRosRuntime(
@@ -42,9 +43,11 @@ class MppiRosRuntime {
   void PublishTrajectoryVisualization(
     const PlannedTrajectory & trajectory, const rclcpp::Time & publication_time);
   void QueueVisualization(
-    PlannedTrajectory trajectory, const rclcpp::Time & publication_time);
+    std::shared_ptr<const PlannedTrajectory> trajectory,
+    const rclcpp::Time & publication_time);
   void VisualizationWorker();
-  void TimerCallback();
+  void SolveCallback();
+  void ControlPublicationCallback();
 
   rclcpp::Node & node_;
   std::unique_ptr<MppiController> controller_;
@@ -57,15 +60,21 @@ class MppiRosRuntime {
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr raceline_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr left_boundary_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr right_boundary_publisher_;
-  rclcpp::TimerBase::SharedPtr timer_;
-  std::mutex mutex_;
+  rclcpp::TimerBase::SharedPtr solve_timer_;
+  rclcpp::TimerBase::SharedPtr control_publication_timer_;
+  std::mutex controller_mutex_;
   std::uint64_t observation_generation_{};
   std::uint64_t solved_generation_{};
+  std::mutex solution_mutex_;
+  std::shared_ptr<const PlannedTrajectory> latest_solution_;
+  std::uint64_t latest_solution_generation_{};
+  std::uint64_t published_solution_generation_{};
   std::chrono::nanoseconds visualization_period_{};
   std::chrono::steady_clock::time_point next_visualization_time_{};
   std::mutex visualization_mutex_;
   std::condition_variable visualization_cv_;
-  std::optional<std::pair<PlannedTrajectory, rclcpp::Time>> pending_visualization_;
+  std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>>
+  pending_visualization_;
   bool stop_visualization_{false};
   std::thread visualization_thread_;
 };

@@ -5,21 +5,28 @@ and Jetson Orin NX. It is a new implementation for `nav_ws`; EPIC is only the
 behavioral reference. There are no perception, semantic-map, or online-mapping
 dependencies.
 
-The default runtime problem is `K=2001`, `T=50`, and `dt=0.1 s`. Controls are
+The default runtime problem is `K=2001`, `T=35`, and `dt=0.1 s`. Controls are
 physical steering angle in radians and driven-wheel torque in Nm. Analytic
 kinematic and dynamic Fiala models execute as fused CUDA rollouts. A learned
 PyTorch body-derivative model can be exported through ONNX and run batched with
 TensorRT; the path dynamics come from the selected rollout frame, which
 `mppi.yaml` sets to `frenet` or `cartesian`.
 
-The default ROS output is `xxcar_msgs/msg/VehicleControlTrajectory` on
+The controller can publish `xxcar_msgs/msg/VehicleControlTrajectory` on
 `vehicle_control_trajectory`. It contains aligned arrays of exactly `T` planar
 states and `T` controls; internal terminal state `x[T]` is deliberately omitted.
-An opt-in direct mode instead publishes the first optimized control as the same
+The checked-in vehicle configuration selects direct mode and publishes the first
+optimized control as the same
 `geometry_msgs/msg/Twist` contract used by `PID_lanekeeping`: steering radians
 in `angular.z` and either scaled/clamped duty cycle or unchanged wheel torque in
 `linear.x`. ROS safety/output defaults live in `config/mppi.yaml` and remain
 overridable at launch. No UART packets are emitted by this package.
+
+Optimization and command output are independently scheduled. The shipped
+configuration solves on fresh EKF updates at up to `solve_rate_hz: 50` and
+publishes only the newest completed solution at
+`control_publish_rate_hz: 25`. `maximum_solution_age_s` prevents a delayed
+timer from emitting a stale command.
 
 Optional RViz output publishes the expected/optimized horizon as
 `nav_msgs/Path`, the best-weighted sampled rollouts as

@@ -2,7 +2,7 @@ name: dynamic_bicycle_fiala  # kinematic_bicycle | tensorrt_neural_derivative
 # current_map must name a map directory, for example:
 #   export current_map="$HOME/map/last_run_sept1"
 # The loader derives <directory>/<directory-name>_frenet_map.csv.
-raceline_path: "$HOME/map/${CURRENT_MAP}"
+raceline_path: "${current_map}"
 # raceline_path: "last_run_sept1_frenet_map.csv"
 vehicle_params_path: vehicle.yaml
 neural_model_path: model.plan

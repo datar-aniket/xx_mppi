@@ -41,8 +41,10 @@ This package has been compile-verified with CUDA 12.6.68 and TensorRT
 `createOptimizationProfile()` are builder-owned; do not wrap them in an owning
 smart pointer when updating the engine-builder tool.
 
-The 100 Hz requirement means the complete solve must remain below 10 ms,
-including state/reference copies and output synchronization. Measure after a
+Solver and control publication rates are independent. A 100 Hz solve target
+still means the complete solve must remain below 10 ms, including
+state/reference copies and output synchronization; it does not require a 100 Hz
+actuator publication rate. Measure after a
 warm-up period in the intended Jetson power mode and record median, p95, p99,
 maximum, effective sample size, and finite rollout count. The controller reports
 GPU-event `solve_time_ms`; end-to-end ROS callback latency should be measured

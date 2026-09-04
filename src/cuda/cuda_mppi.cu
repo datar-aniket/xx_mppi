@@ -71,6 +71,9 @@ struct DeviceCosts {
   float reference_tracking[kStateDim];
   float control_effort[kControlDim];
   float control_smoothness[kControlDim];
+  float longitudinal_acceleration;
+  float longitudinal_deceleration;
+  float control_rate[kControlDim];
   float velocity_profile;
   float velocity_overspeed_multiplier;
   float progress;
@@ -481,6 +484,8 @@ __global__ void RolloutAndCost(
       cost += weights.control_effort[channel] * control[channel] * control[channel];
       const float delta = control[channel] - prior[channel];
       cost += weights.control_smoothness[channel] * delta * delta;
+      const float rate = delta / config.dt;
+      cost += weights.control_rate[channel] * rate * rate;
       float sigma = config.sigma[channel];
       if (channel == kSteering && config.speed_scaled_steering) {
         sigma *= fminf(fmaxf(
@@ -491,7 +496,12 @@ __global__ void RolloutAndCost(
         fmaxf(sigma * sigma, 1.0e-12F) * (control[channel] - nominal[t][channel]);
     }
     prior = control;
+    const float previous_speed = state[kSpeed];
     state = IntegrateAnalyticStep(state, control, track, config, parameters);
+    const float acceleration = (state[kSpeed] - previous_speed) / config.dt;
+    const float acceleration_weight = acceleration >= 0.0F ?
+      weights.longitudinal_acceleration : weights.longitudinal_deceleration;
+    cost += acceleration_weight * acceleration * acceleration;
     frenet = FrameView(state, s_hint, track, config);
     s_hint = frenet.path_evolution;
     trajectories[state_base + t + 1U] = state;
@@ -549,6 +559,8 @@ __global__ void NeuralStageCostAndPack(
     cost += weights.control_effort[channel] * control[channel] * control[channel];
     const float delta = control[channel] - prior[channel];
     cost += weights.control_smoothness[channel] * delta * delta;
+    const float rate = delta / config.dt;
+    cost += weights.control_rate[channel] * rate * rate;
     float sigma = config.sigma[channel];
     if (channel == kSteering && config.speed_scaled_steering) {
       sigma *= fminf(fmaxf(
@@ -592,8 +604,9 @@ __global__ void PackNeuralInputs(
 
 __global__ void NeuralIntegrateAndStore(
   State * current_states, const float * body_derivatives,
-  State * trajectories, const std::uint16_t time_index, const float step_dt,
-  const bool store_trajectory, const DeviceTrack track, const DeviceMppi config)
+  State * trajectories, float * costs, const std::uint16_t time_index,
+  const float step_dt, const bool store_trajectory, const DeviceTrack track,
+  const DeviceMppi config, const DeviceCosts weights)
 {
   const std::uint32_t sample = blockIdx.x * blockDim.x + threadIdx.x;
   if (sample >= config.samples) {
@@ -616,6 +629,11 @@ __global__ void NeuralIntegrateAndStore(
   if (store_trajectory) {
     const std::size_t trajectory_offset =
       static_cast<std::size_t>(sample) * (config.horizon + 1U) + time_index + 1U;
+    const float acceleration =
+      (state[kSpeed] - trajectories[trajectory_offset - 1U][kSpeed]) / config.dt;
+    const float acceleration_weight = acceleration >= 0.0F ?
+      weights.longitudinal_acceleration : weights.longitudinal_deceleration;
+    costs[sample] += acceleration_weight * acceleration * acceleration;
     trajectories[trajectory_offset] = state;
   }
 }
@@ -832,7 +850,10 @@ DeviceCosts ToDeviceCosts(const CostWeights & source) {
   for (std::size_t i = 0; i < kControlDim; ++i) {
     result.control_effort[i] = source.control_effort[i];
     result.control_smoothness[i] = source.control_smoothness[i];
+    result.control_rate[i] = source.control_rate[i];
   }
+  result.longitudinal_acceleration = source.longitudinal_acceleration;
+  result.longitudinal_deceleration = source.longitudinal_deceleration;
   result.velocity_profile = source.velocity_profile;
   result.velocity_overspeed_multiplier = source.velocity_overspeed_multiplier;
   result.progress = source.progress;
@@ -1151,8 +1172,8 @@ class CudaMppiController::Impl {
             neural_input_, neural_derivative_, config_.num_samples,
             reinterpret_cast<void *>(stream_));
           NeuralIntegrateAndStore<<<sample_blocks, 256, 0, stream_>>>(
-            neural_states_, neural_derivative_, trajectories_, t, step_dt,
-            substep + 1U == substeps, track_, device_config_);
+            neural_states_, neural_derivative_, trajectories_, costs_device_, t,
+            step_dt, substep + 1U == substeps, track_, device_config_, costs_);
         }
       }
       FinalizeNeuralCosts<<<sample_blocks, 256, 0, stream_>>>(

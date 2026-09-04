@@ -13,10 +13,6 @@ struct EkfStateAdapterConfig {
   bool require_solution_validity{true};
   bool require_absolute_yaw{true};
   bool require_vesc{true};
-  float steering_scale_to_rad{1.0F};
-  float steering_offset_rad{0.0F};
-  float torque_scale_to_nm{1.0F};
-  float motor_speed_scale_to_mps{1.0F};
 };
 
 void ValidateEkfStateAdapterConfig(const EkfStateAdapterConfig & config);

@@ -1,5 +1,6 @@
 #include "xx_mppi/ros/runtime.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -63,11 +64,25 @@ MppiRosRuntime::MppiRosRuntime(
         1.0e9 / static_cast<double>(controller_->config().visualization_rate_hz))));
     next_visualization_time_ = std::chrono::steady_clock::now();
   }
-  const auto period_ns = static_cast<std::int64_t>(std::llround(
+  const auto solve_period_ns = static_cast<std::int64_t>(std::llround(
       1.0e9 / static_cast<double>(controller_->config().solve_rate_hz)));
-  timer_ = node_.create_wall_timer(
-    std::chrono::nanoseconds(period_ns),
-    [this]() {TimerCallback();});
+  solve_timer_ = node_.create_wall_timer(
+    std::chrono::nanoseconds(solve_period_ns), [this]() {SolveCallback();});
+  const auto publication_period_ns = static_cast<std::int64_t>(std::llround(
+      1.0e9 / static_cast<double>(controller_->config().control_publish_rate_hz)));
+  control_publication_timer_ = node_.create_wall_timer(
+    std::chrono::nanoseconds(publication_period_ns),
+    [this]() {ControlPublicationCallback();});
+  RCLCPP_INFO(
+    node_.get_logger(), "MPPI solve rate %.3f Hz, control publication rate %.3f Hz",
+    static_cast<double>(controller_->config().solve_rate_hz),
+    static_cast<double>(controller_->config().control_publish_rate_hz));
+  if (controller_->config().control_publish_rate_hz > controller_->config().solve_rate_hz) {
+    RCLCPP_WARN(
+      node_.get_logger(),
+      "control_publish_rate_hz exceeds solve_rate_hz; new-only publication will be "
+      "limited by the solve/state rate");
+  }
   if (visualization_.enabled) {
     visualization_thread_ = std::thread([this]() {VisualizationWorker();});
     RCLCPP_INFO(
@@ -111,7 +126,8 @@ void MppiRosRuntime::PublishTrajectoryVisualization(
 }
 
 void MppiRosRuntime::QueueVisualization(
-  PlannedTrajectory trajectory, const rclcpp::Time & publication_time)
+  std::shared_ptr<const PlannedTrajectory> trajectory,
+  const rclcpp::Time & publication_time)
 {
   {
     std::lock_guard<std::mutex> lock(visualization_mutex_);
@@ -123,7 +139,7 @@ void MppiRosRuntime::QueueVisualization(
 void MppiRosRuntime::VisualizationWorker() {
   auto next_static_publication = std::chrono::steady_clock::now();
   while (true) {
-    std::optional<std::pair<PlannedTrajectory, rclcpp::Time>> work;
+    std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>> work;
     bool publish_static = false;
     {
       std::unique_lock<std::mutex> lock(visualization_mutex_);
@@ -154,7 +170,7 @@ void MppiRosRuntime::VisualizationWorker() {
     }
     if (work) {
       try {
-        PublishTrajectoryVisualization(work->first, work->second);
+        PublishTrajectoryVisualization(*work->first, work->second);
       } catch (const std::exception & error) {
         RCLCPP_ERROR_THROTTLE(
           node_.get_logger(), *node_.get_clock(), 1000,
@@ -179,29 +195,37 @@ Projection MppiRosRuntime::OnObservation(const VehicleObservation & observation)
       static_cast<double>(observation.sideslip_rad),
       static_cast<double>(maximum_sideslip));
   }
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::mutex> lock(controller_mutex_);
   const auto projection = controller_->UpdateObservation(observation);
   ++observation_generation_;
   return projection;
 }
 
 void MppiRosRuntime::Reset() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  controller_->Reset();
-  observation_generation_ = 0U;
-  solved_generation_ = 0U;
-  next_visualization_time_ = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(controller_mutex_);
+    controller_->Reset();
+    observation_generation_ = 0U;
+    solved_generation_ = 0U;
+    next_visualization_time_ = std::chrono::steady_clock::now();
+  }
+  {
+    std::lock_guard<std::mutex> solution_lock(solution_mutex_);
+    latest_solution_.reset();
+    latest_solution_generation_ = 0U;
+    published_solution_generation_ = 0U;
+  }
   {
     std::lock_guard<std::mutex> visualization_lock(visualization_mutex_);
     pending_visualization_.reset();
   }
 }
 
-void MppiRosRuntime::TimerCallback() {
+void MppiRosRuntime::SolveCallback() {
   PlannedTrajectory trajectory;
   bool capture_visualization = false;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(controller_mutex_);
     if (observation_generation_ == solved_generation_) {
       return;
     }
@@ -225,20 +249,76 @@ void MppiRosRuntime::TimerCallback() {
       return;
     }
   }
+  const float solve_budget_ms = 1000.0F / controller_->config().solve_rate_hz;
+  if (trajectory.diagnostics.solve_time_ms > solve_budget_ms) {
+    RCLCPP_WARN_THROTTLE(
+      node_.get_logger(), *node_.get_clock(), 1000,
+      "MPPI solve took %.3f ms and exceeded the %.3f ms configured period",
+      static_cast<double>(trajectory.diagnostics.solve_time_ms),
+      static_cast<double>(solve_budget_ms));
+  }
+  auto solution = std::make_shared<PlannedTrajectory>(std::move(trajectory));
+  {
+    std::lock_guard<std::mutex> solution_lock(solution_mutex_);
+    latest_solution_ = solution;
+    ++latest_solution_generation_;
+  }
+  if (capture_visualization) {
+    QueueVisualization(std::move(solution), node_.get_clock()->now());
+  }
+}
+
+void MppiRosRuntime::ControlPublicationCallback() {
+  std::shared_ptr<const PlannedTrajectory> solution;
+  std::uint64_t generation = 0U;
+  {
+    std::lock_guard<std::mutex> lock(solution_mutex_);
+    if (!latest_solution_ || latest_solution_generation_ == published_solution_generation_) {
+      return;
+    }
+    solution = latest_solution_;
+    generation = latest_solution_generation_;
+  }
+
   const auto publication_time = node_.get_clock()->now();
+  const double solution_age_s = static_cast<double>(
+    publication_time.nanoseconds() - solution->solution_pose_time_ns) * 1.0e-9;
+  if (controller_->config().maximum_solution_age_s > 0.0F &&
+    solution_age_s > static_cast<double>(controller_->config().maximum_solution_age_s))
+  {
+    RCLCPP_WARN_THROTTLE(
+      node_.get_logger(), *node_.get_clock(), 1000,
+      "Skipping stale MPPI solution (age %.3f s, limit %.3f s)", solution_age_s,
+      static_cast<double>(controller_->config().maximum_solution_age_s));
+    std::lock_guard<std::mutex> lock(solution_mutex_);
+    if (generation == latest_solution_generation_) {
+      published_solution_generation_ = generation;
+    }
+    return;
+  }
+
   try {
     if (direct_control_.enabled) {
-      direct_control_publisher_->publish(ToDirectControlMessage(trajectory, direct_control_));
+      direct_control_publisher_->publish(ToDirectControlMessage(*solution, direct_control_));
     } else {
-      trajectory_publisher_->publish(ToRosMessage(trajectory, publication_time));
+      trajectory_publisher_->publish(ToRosMessage(*solution, publication_time));
     }
   } catch (const std::exception & error) {
     RCLCPP_ERROR_THROTTLE(
       node_.get_logger(), *node_.get_clock(), 1000,
       "MPPI control publication failed: %s", error.what());
+    return;
   }
-  if (capture_visualization) {
-    QueueVisualization(std::move(trajectory), publication_time);
+  if (!solution->controls.empty()) {
+    std::lock_guard<std::mutex> lock(controller_mutex_);
+    controller_->RecordPublishedControl(solution->controls.front());
+  }
+  {
+    std::lock_guard<std::mutex> lock(solution_mutex_);
+    // A newer solve may have completed during publication. Mark only the
+    // solution actually sent so that the newer one remains eligible.
+    published_solution_generation_ = std::max(
+      published_solution_generation_, generation);
   }
 }
 

@@ -1,8 +1,8 @@
 # ROS 2 integration
 
-`xx_mppi_node` subscribes to `xxcar_msgs/msg/EkfState` on `ekf/state`. By
-default it publishes `xxcar_msgs/msg/VehicleControlTrajectory` on
-`vehicle_control_trajectory`. An opt-in direct mode instead publishes
+`xx_mppi_node` subscribes to `xxcar_msgs/msg/EkfState` on `ekf/state`. It can
+publish `xxcar_msgs/msg/VehicleControlTrajectory` on
+`vehicle_control_trajectory`. The checked-in vehicle configuration instead publishes
 `geometry_msgs/msg/Twist` on `cmd_vel`, using the same field contract as
 `PID_lanekeeping`. Topic names and output selection are ROS parameters and
 launch arguments. No MCU/UART publisher belongs to this package.
@@ -10,30 +10,11 @@ launch arguments. No MCU/UART publisher belongs to this package.
 The adapter uses `header.stamp` as `solution_pose_time`, the ENU pose quaternion
 for yaw, body-FLU horizontal twist magnitude for speed, `angular_velocity.z`
 for yaw rate, `linear_acceleration.x`, sideslip, wheel torque, steering, and
-motor peripheral speed. The default scale factors are one. Change
-`steering_scale_to_rad`, `steering_offset_rad`, `torque_scale_to_nm`, or
-`motor_speed_scale_to_mps` only when the driver values are not already SI.
-
-These four scales are still uncalibrated for this vehicle. Recorded
-`/ekf/state` shows `steering_angle` spanning roughly `0 .. 2.4` with no zero
-crossing, `wheel_torque_nm` spanning `-55 .. 46`, and `motor_speed_ms` peaking
-near `1.7` while the vehicle is doing `3.3 m/s` — none of which are radians,
-newton-metres, or metres per second. Until they are fitted:
-
-- leave `observation.use_measured_control_feedback: false` in `mppi.yaml`, so
-  the control-smoothness warm start uses the controller's own last command
-  rather than a raw value that clamps to a control bound every cycle;
-- leave `observation.maximum_model_sideslip_rad` at a physical value. The
-  `side_slip_rad` field is exactly `atan2(v_y, v_x)` of the reported body twist
-  and reaches 2.7 rad in recorded runs, which the small-angle bicycle model and
-  the sideslip kill cost cannot use as-is.
-
-To fit the steering channel, drive a few steady arcs and regress `r / V`
-against `steering_angle`; the slope times the wheelbase gives
-`steering_scale_to_rad` and the zero crossing gives the raw centre, which
-becomes `steering_offset_rad = -centre * steering_scale_to_rad`. The sign of
-that slope is negative on this vehicle, which is the same inversion
-`PID_lanekeeping` applies with `invert_steering`.
+motor peripheral speed. These three feedback channels are already in radians,
+newton-metres, and metres per second and are copied without scale or offset.
+`observation.use_measured_control_feedback: true` therefore starts steering
+velocity and torque-rate costs from the real actuator state. Direct-control
+output mapping is independent and does not alter EKF feedback.
 
 Before accepting a sample, the node requires:
 
@@ -74,6 +55,24 @@ low-speed case. A non-finite sideslip while moving is rejected.
 the accepted input pose time. For every index `i`, `states[i]` and `controls[i]`
 refer to `solution_pose_time + i * dt`; both arrays contain `horizon` entries.
 
+`solve_rate_hz` and `control_publish_rate_hz` in `mppi.yaml` are independent.
+The solver consumes at most one solve per accepted EKF generation and atomically
+replaces the latest solution. The publication timer emits each solution at most
+once, so the configured control rate is an upper bound rather than a stale
+command hold loop. `maximum_solution_age_s` drops a completed solution if its
+source pose is already too old when the publication timer runs; set it to zero
+only for deliberate bag replay.
+
+The physical derivative costs are configured in `weights.yaml`:
+
+- `longitudinal_acceleration.acceleration_weight` and
+  `deceleration_weight` apply to `(V[t+1]-V[t])/dt`;
+- `control_rate.steering_velocity_radps` and
+  `wheel_torque_rate_nmps` apply to command differences divided by `dt`.
+
+These are evaluated identically by the CPU reference evaluator, analytic CUDA
+rollouts, and TensorRT-neural CUDA rollouts.
+
 ## Direct control output
 
 Set `publish_direct_control: true` in `config/mppi.yaml`, or override it with
@@ -92,9 +91,9 @@ publish the first optimized MPPI control as `geometry_msgs/msg/Twist`:
   unchanged and without the duty-cycle clamp;
 - all other `Twist` fields are zero.
 
-The checked-in YAML defaults are solution-validity checking enabled, trajectory
-output selected, topic `cmd_vel`, mode `duty_cycle`, scale `1.0`, and duty limits
-`[-1, 1]`. Duty-cycle mode matches `control_throttle_type:=0` in
+The checked-in YAML defaults are solution-validity checking enabled, direct
+output selected, topic `cmd_vel`, mode `duty_cycle`, and vehicle-specific
+mapping/limits. Duty-cycle mode matches `control_throttle_type:=0` in
 `ekf_mcu_driver`; calibrate its scale for the vehicle. Torque mode requires a
 consumer that interprets `linear.x` as Nm—it must not be connected to a driver
 that interprets the same field as duty cycle or current.
@@ -122,13 +121,13 @@ parameters are declared:
 
 ```yaml
 require_solution_validity: true
-publish_direct_control: false
+publish_direct_control: true
 direct_control_topic: cmd_vel
 control_mode: duty_cycle
-direct_control_torque_to_throttle_scale: 1.0
-direct_control_throttle_min: -1.0
-direct_control_throttle_max: 1.0
-direct_control_steering_scale: 1.0
+direct_control_torque_to_throttle_scale: 25.0
+direct_control_throttle_min: -50.0
+direct_control_throttle_max: 50.0
+direct_control_steering_scale: -4.5
 direct_control_steering_limit_rad: 0.5
 
 observation:
@@ -176,9 +175,9 @@ The checker loads the expected trajectory horizon from the selected
 configuration set. `--expected-horizon` remains available as an explicit
 override.
 
-The UART-backed VESC channels must be calibrated before they can be treated as
-radians, Nm, and m/s. In particular, confirm `VESC_STEER_K`, `VESC_TORQUE_K`,
-and `VESC_SPEED_K` or apply the equivalent node scale parameters.
+Confirm on the bench that the driver publishes the documented radians, Nm, and
+m/s and that their signs agree with the model. The MPPI adapter intentionally
+has no feedback scale parameters.
 
 ## Sample-map bench test
 
@@ -190,15 +189,14 @@ does not replace or modify the real `/ekf/state` stream:
 ros2 launch xx_mppi sample_test.launch.py
 ```
 
-In another terminal, validate the resulting trajectories. The current Orin
-measurement is approximately 33 Hz, so `30` separates message correctness from
-the unmet 100 Hz performance target:
+In another terminal, validate the resulting trajectories. The checker derives
+its default threshold from `control_publish_rate_hz` (80% to allow startup and
+scheduling jitter):
 
 ```bash
 ros2 run xx_mppi smoke_test_ros_pipeline.py \
   --state-topic /xx_mppi/sample_ekf_state \
   --trajectory-topic /xx_mppi/sample_vehicle_control_trajectory \
-  --minimum-rate-hz 30 \
   --duration 10
 ```
 

@@ -24,12 +24,6 @@ def _launch_node(context):
         "require_absolute_yaw": LaunchConfiguration("require_absolute_yaw"),
         "require_vesc": LaunchConfiguration("require_vesc"),
         "state_qos_depth": LaunchConfiguration("state_qos_depth"),
-        "steering_scale_to_rad": LaunchConfiguration("steering_scale_to_rad"),
-        "steering_offset_rad": LaunchConfiguration("steering_offset_rad"),
-        "torque_scale_to_nm": LaunchConfiguration("torque_scale_to_nm"),
-        "motor_speed_scale_to_mps": LaunchConfiguration(
-            "motor_speed_scale_to_mps"
-        ),
         "publish_visualization": LaunchConfiguration("publish_visualization"),
         "visualization_frame_id": LaunchConfiguration("visualization_frame_id"),
         "expected_path_topic": LaunchConfiguration("expected_path_topic"),
@@ -99,10 +93,6 @@ def generate_launch_description():
         DeclareLaunchArgument("require_absolute_yaw", default_value="true"),
         DeclareLaunchArgument("require_vesc", default_value="true"),
         DeclareLaunchArgument("state_qos_depth", default_value="1"),
-        DeclareLaunchArgument("steering_scale_to_rad", default_value="1.0"),
-        DeclareLaunchArgument("steering_offset_rad", default_value="0.0"),
-        DeclareLaunchArgument("torque_scale_to_nm", default_value="1.0"),
-        DeclareLaunchArgument("motor_speed_scale_to_mps", default_value="1.0"),
         DeclareLaunchArgument("publish_visualization", default_value="false"),
         DeclareLaunchArgument("visualization_frame_id", default_value="map"),
         DeclareLaunchArgument(

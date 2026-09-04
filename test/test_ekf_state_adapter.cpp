@@ -43,14 +43,9 @@ EkfState ValidMessage() {
   return message;
 }
 
-TEST(EkfStateAdapter, ConvertsFramesUnitsTimestampAndCalibration) {
+TEST(EkfStateAdapter, ConvertsFramesTimestampAndPreservesPhysicalFeedbackUnits) {
   auto message = ValidMessage();
-  EkfStateAdapterConfig config;
-  config.steering_scale_to_rad = 0.5F;
-  config.steering_offset_rad = -0.1F;
-  config.torque_scale_to_nm = 2.0F;
-  config.motor_speed_scale_to_mps = 0.25F;
-  const auto observation = ToVehicleObservation(message, config);
+  const auto observation = ToVehicleObservation(message);
 
   EXPECT_EQ(observation.pose_time_ns, 10'000'000'020LL);
   EXPECT_FLOAT_EQ(observation.east_m, 1.25F);
@@ -60,9 +55,9 @@ TEST(EkfStateAdapter, ConvertsFramesUnitsTimestampAndCalibration) {
   EXPECT_FLOAT_EQ(observation.yaw_rate_radps, 0.2F);
   EXPECT_FLOAT_EQ(observation.longitudinal_acceleration_mps2, 0.3F);
   EXPECT_FLOAT_EQ(observation.sideslip_rad, 0.1F);
-  EXPECT_FLOAT_EQ(observation.measured_torque_nm, 4.0F);
-  EXPECT_FLOAT_EQ(observation.measured_steering_rad, 0.1F);
-  EXPECT_FLOAT_EQ(observation.driven_wheel_speed_mps, 1.375F);
+  EXPECT_FLOAT_EQ(observation.measured_torque_nm, 2.0F);
+  EXPECT_FLOAT_EQ(observation.measured_steering_rad, 0.4F);
+  EXPECT_FLOAT_EQ(observation.driven_wheel_speed_mps, 5.5F);
 }
 
 TEST(EkfStateAdapter, RejectsMissingPositionValidity) {

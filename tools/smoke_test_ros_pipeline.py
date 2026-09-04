@@ -24,7 +24,7 @@ def stamp_seconds(stamp):
     return float(stamp.sec) + 1.0e-9 * float(stamp.nanosec)
 
 
-def load_expected_horizon(config_directory):
+def load_mppi_config(config_directory):
     directory = (
         Path(config_directory)
         if config_directory
@@ -36,12 +36,24 @@ def load_expected_horizon(config_directory):
             config = yaml.safe_load(stream)
     except (OSError, yaml.YAMLError) as error:
         raise ValueError(f"cannot load MPPI config '{path}': {error}") from error
-    horizon = config.get("horizon") if isinstance(config, dict) else None
+    if not isinstance(config, dict):
+        raise ValueError(f"MPPI config '{path}' must contain a YAML mapping")
+    horizon = config.get("horizon")
     if isinstance(horizon, bool) or not isinstance(horizon, int):
         raise ValueError(f"MPPI config '{path}' must contain an integer horizon")
     if horizon <= 0 or horizon >= 65535:
         raise ValueError(f"MPPI config horizon {horizon} is outside [1, 65534]")
-    return horizon
+    publish_rate = config.get("control_publish_rate_hz")
+    if not isinstance(publish_rate, (int, float)) or isinstance(publish_rate, bool):
+        raise ValueError(f"MPPI config '{path}' must contain control_publish_rate_hz")
+    if not math.isfinite(publish_rate) or publish_rate <= 0.0:
+        raise ValueError("control_publish_rate_hz must be finite and positive")
+    maximum_age_s = config.get("maximum_solution_age_s", 0.1)
+    if not isinstance(maximum_age_s, (int, float)) or isinstance(maximum_age_s, bool):
+        raise ValueError("maximum_solution_age_s must be numeric")
+    if not math.isfinite(maximum_age_s) or maximum_age_s < 0.0:
+        raise ValueError("maximum_solution_age_s must be finite and nonnegative")
+    return horizon, float(publish_rate), float(maximum_age_s)
 
 
 class PipelineMonitor(Node):
@@ -116,8 +128,12 @@ def main():
     parser.add_argument(
         "--trajectory-topic", default="/vehicle_control_trajectory"
     )
-    parser.add_argument("--minimum-rate-hz", type=float, default=80.0)
-    parser.add_argument("--maximum-solution-age-ms", type=float, default=100.0)
+    parser.add_argument(
+        "--minimum-rate-hz",
+        type=float,
+        help="minimum output rate; defaults to 80%% of control_publish_rate_hz",
+    )
+    parser.add_argument("--maximum-solution-age-ms", type=float)
     parser.add_argument(
         "--config-directory",
         help="configuration directory containing mppi.yaml; defaults to package share",
@@ -130,15 +146,26 @@ def main():
     parser.add_argument("--maximum-steering-rad", type=float, default=0.5)
     parser.add_argument("--maximum-torque-nm", type=float, default=5.0)
     args, ros_args = parser.parse_known_args()
-    if args.duration <= 0.0 or args.minimum_rate_hz < 0.0:
-        parser.error("duration must be positive and minimum rate nonnegative")
+    if args.duration <= 0.0:
+        parser.error("duration must be positive")
+    try:
+        configured_horizon, configured_rate, configured_age_s = load_mppi_config(
+            args.config_directory
+        )
+    except ValueError as error:
+        parser.error(str(error))
     if args.expected_horizon is None:
-        try:
-            args.expected_horizon = load_expected_horizon(args.config_directory)
-        except ValueError as error:
-            parser.error(str(error))
+        args.expected_horizon = configured_horizon
     elif args.expected_horizon <= 0 or args.expected_horizon >= 65535:
         parser.error("expected horizon must be in [1, 65534]")
+    if args.minimum_rate_hz is None:
+        args.minimum_rate_hz = 0.8 * configured_rate
+    elif args.minimum_rate_hz < 0.0:
+        parser.error("minimum rate must be nonnegative")
+    if args.maximum_solution_age_ms is None:
+        args.maximum_solution_age_ms = (
+            1.25 * configured_age_s * 1000.0 if configured_age_s > 0.0 else 1000.0
+        )
 
     rclpy.init(args=ros_args)
     monitor = PipelineMonitor(args)

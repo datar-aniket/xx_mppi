@@ -31,15 +31,7 @@ float FiniteFloat(const double value, const char * label) {
 }  // namespace
 
 void ValidateEkfStateAdapterConfig(const EkfStateAdapterConfig & config) {
-  if (!std::isfinite(config.steering_scale_to_rad) ||
-    !std::isfinite(config.steering_offset_rad) ||
-    !std::isfinite(config.torque_scale_to_nm) ||
-    !std::isfinite(config.motor_speed_scale_to_mps) ||
-    config.steering_scale_to_rad == 0.0F || config.torque_scale_to_nm == 0.0F ||
-    config.motor_speed_scale_to_mps == 0.0F)
-  {
-    throw std::invalid_argument("EKF state adapter scales must be finite and nonzero");
-  }
+  (void)config;
 }
 
 VehicleObservation ToVehicleObservation(
@@ -113,15 +105,11 @@ VehicleObservation ToVehicleObservation(
   observation.longitudinal_acceleration_mps2 = FiniteFloat(
     message.linear_acceleration.x, "longitudinal acceleration");
   observation.sideslip_rad = sideslip;
-  observation.measured_torque_nm = FiniteFloat(
-    static_cast<double>(message.wheel_torque_nm) * config.torque_scale_to_nm,
-    "wheel torque");
-  observation.measured_steering_rad = FiniteFloat(
-    static_cast<double>(message.steering_angle) * config.steering_scale_to_rad +
-    config.steering_offset_rad, "steering angle");
-  observation.driven_wheel_speed_mps = FiniteFloat(
-    static_cast<double>(message.motor_speed_ms) * config.motor_speed_scale_to_mps,
-    "motor speed");
+  // EkfState already defines these channels in the physical units consumed by
+  // the model. Keeping this copy unit-preserving prevents double calibration.
+  observation.measured_torque_nm = FiniteFloat(message.wheel_torque_nm, "wheel torque");
+  observation.measured_steering_rad = FiniteFloat(message.steering_angle, "steering angle");
+  observation.driven_wheel_speed_mps = FiniteFloat(message.motor_speed_ms, "motor speed");
   observation.status = static_cast<std::uint32_t>(message.solution_status) |
     (static_cast<std::uint32_t>(message.source_valid) << 8U);
   return observation;

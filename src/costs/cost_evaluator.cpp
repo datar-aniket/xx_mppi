@@ -4,10 +4,19 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "xx_mppi/costs/map_boundary.hpp"
 
 namespace xxcar::mppi {
+
+CostEvaluator::CostEvaluator(CostWeights weights, const float dt_s)
+: weights_(std::move(weights)), dt_s_(dt_s)
+{
+  if (!(dt_s_ > 0.0F) || !std::isfinite(dt_s_)) {
+    throw std::invalid_argument("cost dt must be finite and positive");
+  }
+}
 
 float CostEvaluator::InterpolateByS(
   const std::vector<float> & s_grid, const std::vector<float> & values, const float s)
@@ -103,7 +112,8 @@ float CostEvaluator::Evaluate(
     (states.back()[kPathEvolution] - states.front()[kPathEvolution]);
 
   Control prior = previous_control;
-  for (const auto & control : controls) {
+  for (std::size_t t = 0; t < controls.size(); ++t) {
+    const auto & control = controls[t];
     for (std::size_t i = 0; i < kControlDim; ++i) {
       if (!std::isfinite(control[i])) {
         return std::numeric_limits<float>::infinity();
@@ -111,7 +121,13 @@ float CostEvaluator::Evaluate(
       cost += weights_.control_effort[i] * control[i] * control[i];
       const float delta = control[i] - prior[i];
       cost += weights_.control_smoothness[i] * delta * delta;
+      const float rate = delta / dt_s_;
+      cost += weights_.control_rate[i] * rate * rate;
     }
+    const float acceleration = (states[t + 1U][kSpeed] - states[t][kSpeed]) / dt_s_;
+    const float acceleration_weight = acceleration >= 0.0F ?
+      weights_.longitudinal_acceleration : weights_.longitudinal_deceleration;
+    cost += acceleration_weight * acceleration * acceleration;
     prior = control;
   }
   return std::isfinite(cost) ? cost : std::numeric_limits<float>::infinity();

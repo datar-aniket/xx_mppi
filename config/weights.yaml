@@ -43,3 +43,15 @@ control_effort:
 control_smoothness: 
   steering_angle_rad: 100.0
   wheel_torque_nm: 0.00001
+
+# Penalize predicted longitudinal acceleration asymmetrically. Values are
+# derived from consecutive speed states with the configured MPPI dt.
+longitudinal_acceleration:
+  acceleration_weight: 0.05
+  deceleration_weight: 0.05
+
+# Physical command-rate penalties, including the transition from measured EKF
+# actuator feedback to the first candidate command.
+control_rate:
+  steering_velocity_radps: 0.25
+  wheel_torque_rate_nmps: 0.00001
