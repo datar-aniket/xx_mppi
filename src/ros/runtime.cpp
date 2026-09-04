@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "xx_mppi/controller/builder.hpp"
-#include "xx_mppi/ros/diagnostics_message.hpp"
 #include "xx_mppi/ros/direct_control_message.hpp"
 #include "xx_mppi/ros/trajectory_message.hpp"
 
@@ -74,20 +73,17 @@ MppiRosRuntime::MppiRosRuntime(
   control_publication_timer_ = node_.create_wall_timer(
     std::chrono::nanoseconds(publication_period_ns),
     [this]() {ControlPublicationCallback();});
-  info_publisher_ = node_.create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
-    controller_->config().info_topic, rclcpp::QoS(1).best_effort());
   const auto info_period_ns = static_cast<std::int64_t>(std::llround(
-      1.0e9 / static_cast<double>(controller_->config().info_publish_rate_hz)));
-  info_publication_timer_ = node_.create_wall_timer(
-    std::chrono::nanoseconds(info_period_ns), [this]() {InfoPublicationCallback();});
+      1.0e9 / static_cast<double>(controller_->config().info_log_rate_hz)));
+  info_log_timer_ = node_.create_wall_timer(
+    std::chrono::nanoseconds(info_period_ns), [this]() {InfoLogCallback();});
   RCLCPP_INFO(
     node_.get_logger(), "MPPI solve rate %.3f Hz, control publication rate %.3f Hz",
     static_cast<double>(controller_->config().solve_rate_hz),
     static_cast<double>(controller_->config().control_publish_rate_hz));
   RCLCPP_INFO(
-    node_.get_logger(), "MPPI diagnostics publishing at %.3f Hz on '%s'",
-    static_cast<double>(controller_->config().info_publish_rate_hz),
-    controller_->config().info_topic.c_str());
+    node_.get_logger(), "MPPI terminal info logging at %.3f Hz",
+    static_cast<double>(controller_->config().info_log_rate_hz));
   if (controller_->config().control_publish_rate_hz > controller_->config().solve_rate_hz) {
     RCLCPP_WARN(
       node_.get_logger(),
@@ -335,22 +331,32 @@ void MppiRosRuntime::ControlPublicationCallback() {
   }
 }
 
-void MppiRosRuntime::InfoPublicationCallback() {
+void MppiRosRuntime::InfoLogCallback() {
   std::shared_ptr<const PlannedTrajectory> solution;
   {
     std::lock_guard<std::mutex> lock(solution_mutex_);
     solution = published_solution_;
   }
-  if (!solution) {
+  if (!solution || solution->controls.empty()) {
     return;
   }
-  try {
-    info_publisher_->publish(ToDiagnosticsMessage(*solution, node_.get_clock()->now()));
-  } catch (const std::exception & error) {
-    RCLCPP_ERROR_THROTTLE(
-      node_.get_logger(), *node_.get_clock(), 1000,
-      "MPPI diagnostics publication failed: %s", error.what());
-  }
+  const auto & diagnostics = solution->diagnostics;
+  const auto & command = solution->controls.front();
+  const double solution_age_ms = static_cast<double>(
+    node_.get_clock()->now().nanoseconds() - solution->solution_pose_time_ns) * 1.0e-6;
+  RCLCPP_INFO(
+    node_.get_logger(),
+    "MPPI info: solve=%.3f ms lambda=%.6g sigma=[steer %.6g rad, torque %.6g Nm] "
+    "command=[steer %.6g rad, torque %.6g Nm] cost=%.6g ESS=%.3f finite=%u age=%.3f ms",
+    static_cast<double>(diagnostics.solve_time_ms),
+    static_cast<double>(diagnostics.lambda_used),
+    static_cast<double>(diagnostics.sigma_used[kSteering]),
+    static_cast<double>(diagnostics.sigma_used[kWheelTorque]),
+    static_cast<double>(command[kSteering]),
+    static_cast<double>(command[kWheelTorque]),
+    static_cast<double>(diagnostics.minimum_cost),
+    static_cast<double>(diagnostics.effective_sample_size),
+    static_cast<unsigned>(diagnostics.finite_rollouts), solution_age_ms);
 }
 
 }  // namespace xxcar::mppi

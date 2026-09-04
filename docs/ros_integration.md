@@ -75,9 +75,9 @@ rollouts, and TensorRT-neural CUDA rollouts.
 
 ## Solver information
 
-The latest successfully published control solution is reported at
-`info_publish_rate_hz` (10 Hz by default) on `info_topic` (`xx_mppi/info`) as a
-best-effort `diagnostic_msgs/msg/DiagnosticArray`. The named values are:
+The latest successfully published control solution is printed to the node
+terminal with ROS `INFO` logging at `info_log_rate_hz` (10 Hz by default).
+Each line reports:
 
 - `solve_time_ms`, `lambda`, `steering_sigma_rad`, and
   `wheel_torque_sigma_nm`;
@@ -86,11 +86,11 @@ best-effort `diagnostic_msgs/msg/DiagnosticArray`. The named values are:
   `solution_age_ms`.
 
 The command fields come from the solution that was actually sent by the control
-publisher, rather than a newer unpublished solve. Inspect it with:
+publisher, rather than a newer unpublished solve. No additional ROS topic is
+created. The output looks like:
 
 ```bash
-ros2 topic echo /xx_mppi/info
-ros2 topic hz /xx_mppi/info
+[xx_mppi_node] [INFO] MPPI info: solve=... lambda=... sigma=[...] command=[...]
 ```
 
 ## Direct control output

@@ -30,8 +30,7 @@ struct ControllerConfig {
   // Do not emit a command solved from an observation older than this. Zero
   // disables this publication-time guard (useful for deterministic bag replay).
   float maximum_solution_age_s{0.1F};
-  float info_publish_rate_hz{10.0F};
-  std::string info_topic{"xx_mppi/info"};
+  float info_log_rate_hz{10.0F};
   float visualization_rate_hz{10.0F};
   std::uint32_t num_rollouts{15U};
 };

@@ -10,7 +10,6 @@
 #include <thread>
 #include <utility>
 
-#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -49,14 +48,13 @@ class MppiRosRuntime {
   void VisualizationWorker();
   void SolveCallback();
   void ControlPublicationCallback();
-  void InfoPublicationCallback();
+  void InfoLogCallback();
 
   rclcpp::Node & node_;
   std::unique_ptr<MppiController> controller_;
   DirectControlConfig direct_control_;
   rclcpp::Publisher<xxcar_msgs::msg::VehicleControlTrajectory>::SharedPtr trajectory_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr direct_control_publisher_;
-  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr info_publisher_;
   VisualizationConfig visualization_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr planned_path_publisher_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
@@ -65,7 +63,7 @@ class MppiRosRuntime {
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr right_boundary_publisher_;
   rclcpp::TimerBase::SharedPtr solve_timer_;
   rclcpp::TimerBase::SharedPtr control_publication_timer_;
-  rclcpp::TimerBase::SharedPtr info_publication_timer_;
+  rclcpp::TimerBase::SharedPtr info_log_timer_;
   std::mutex controller_mutex_;
   std::uint64_t observation_generation_{};
   std::uint64_t solved_generation_{};
