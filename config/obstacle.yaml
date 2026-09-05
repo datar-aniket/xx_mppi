@@ -2,10 +2,10 @@ enabled: true
 
 # Rebuilt atomically from confirmed world-space tracks. The last complete field
 # remains active if scans stop.
-grid_resolution_m: 0.05
-grid_width_m: 12.0
-grid_height_m: 12.0
-maximum_distance_m: 8.0
+grid_resolution_m: 0.2
+grid_width_m: 15.0
+grid_height_m: 15.0
+maximum_distance_m: 6.0
 obstacle_inflation_radius_m: 0.01
 
 # A return must match an existing world-space track in this many consecutive
@@ -13,20 +13,22 @@ obstacle_inflation_radius_m: 0.01
 # many completed scan updates in which it is not matched. At 40 Hz, 4 updates
 # are 100 ms. Dropped/missing scans do not consume persistence.
 confirmation_updates: 1
-persistence_updates: 2
+persistence_updates: 3
 association_distance_m: 0.05
 
-pose_history_s: 0.10
+pose_history_s: 0.50
 maximum_extrapolation_s: 0.02
 
-distance_weight: 100.0
+distance_weight: 300.0
 # distance_weight: 0.0
-influence_distance_m: 0.2
-latch_threshold_m: 0.1
+influence_distance_m: 0.1
+# Exponential proximity scale and latch point. The latching penalty equals its
+# configured weight here, grows exponentially closer, and decays farther away.
+latch_threshold_m: 0.05
 # latching_weight: 0.0
-latching_weight: 5000.0
+latching_weight: 80000.0
 
 # Traxxas TRX-4 Sport bounding box represented conservatively by three circles.
-footprint_length_m: 0.60
+footprint_length_m: 0.50
 footprint_width_m: 0.3
 footprint_circles: 3
