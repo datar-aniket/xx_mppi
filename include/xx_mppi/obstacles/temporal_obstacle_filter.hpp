@@ -28,8 +28,21 @@ class TemporalObstacleFilter {
     bool confirmed{false};
   };
 
+  struct Cell {
+    std::int64_t x{};
+    std::int64_t y{};
+  };
+
+  struct SpatialEntry {
+    Cell cell;
+    std::size_t track_index{};
+  };
+
   ObstacleConfig config_;
   std::vector<Track> tracks_;
+  std::vector<Track> retained_tracks_;
+  std::vector<SpatialEntry> spatial_index_;
+  std::vector<std::uint8_t> matched_;
 };
 
 }  // namespace xxcar::mppi

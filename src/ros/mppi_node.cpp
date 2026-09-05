@@ -102,11 +102,15 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
 
   runtime_ = std::make_unique<MppiRosRuntime>(
     *this, config_directory, trajectory_topic, direct_control, std::move(visualization));
+  state_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  scan_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rclcpp::SubscriptionOptions state_options;
+  state_options.callback_group = state_callback_group_;
   const auto qos = rclcpp::QoS(rclcpp::KeepLast(
       static_cast<std::size_t>(state_qos_depth))).best_effort().durability_volatile();
   state_subscription_ = create_subscription<xxcar_msgs::msg::EkfState>(
     state_topic, qos,
-    std::bind(&MppiNode::StateCallback, this, std::placeholders::_1));
+    std::bind(&MppiNode::StateCallback, this, std::placeholders::_1), state_options);
 
   const auto obstacle_config = runtime_->config().obstacles;
   if (obstacle_config.enabled) {
@@ -121,9 +125,11 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
     const auto scan_qos = rclcpp::SensorDataQoS().keep_last(
       static_cast<std::size_t>(scan_qos_depth));
+    rclcpp::SubscriptionOptions scan_options;
+    scan_options.callback_group = scan_callback_group_;
     scan_subscription_ = create_subscription<sensor_msgs::msg::LaserScan>(
       scan_topic, scan_qos,
-      std::bind(&MppiNode::ScanCallback, this, std::placeholders::_1));
+      std::bind(&MppiNode::ScanCallback, this, std::placeholders::_1), scan_options);
     obstacle_worker_ = std::thread(&MppiNode::ObstacleWorker, this);
     RCLCPP_INFO(
       get_logger(), "Obstacle SDF listening on '%s'; static transform %s <- %s",
@@ -188,7 +194,7 @@ void MppiNode::StateCallback(
         static_cast<unsigned>(message->reset_counter));
     }
 
-    const auto projection = runtime_->OnObservation(observation);
+    runtime_->OnObservation(observation);
     if (pose_history_) {
       const float history_sideslip = std::isfinite(observation.sideslip_rad) ?
         observation.sideslip_rad : 0.0F;
@@ -200,9 +206,7 @@ void MppiNode::StateCallback(
     }
     previous_pose_time_ns_ = observation.pose_time_ns;
     previous_reset_counter_ = message->reset_counter;
-    RCLCPP_DEBUG(
-      get_logger(), "state accepted: s=%.3f e=%.3f dphi=%.3f",
-      projection.s_m, projection.e_m, projection.relative_course_rad);
+    RCLCPP_DEBUG(get_logger(), "state accepted and queued for MPPI");
   } catch (const std::exception & error) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 1000, "Rejecting EKF state: %s", error.what());
@@ -326,11 +330,10 @@ void MppiNode::ObstacleWorker() {
       if (history_snapshot.second != pose_epoch_) {
         continue;
       }
-      // Keep the epoch check and publication ordered with EKF reset. If a
-      // reset is waiting, it clears this field immediately after this lock;
-      // if it already happened, the stale generation is rejected above.
-      runtime_->SetObstacleField(std::move(field));
     }
+    // Publishing the latest-only field must never extend the pose-history
+    // critical section; EKF updates need that lock for only a few instructions.
+    runtime_->SetObstacleField(std::move(field), history_snapshot.second);
   }
 }
 

@@ -25,9 +25,11 @@ Before SDF construction, returns are associated to world-space tracks within
 messages do not age it. An EKF reset clears the active field immediately and
 causes the temporal tracks to be cleared before the next accepted scan.
 
-The default 12 m by 12 m, 5 cm grid contains 57,600 float cells (225 KiB). The
-CPU worker uses a linear-time two-pass distance transform. A new generation is
-copied through persistent pinned host memory onto the controller's existing
+The shipped 15 m by 15 m, 20 cm grid contains 5,625 float cells (22 KiB). The
+CPU worker uses a linear-time two-pass distance transform with preallocated
+scratch grids. Temporal association uses a flat sorted spatial index rather
+than allocating a hash bucket vector for every occupied cell. A new generation
+is copied through persistent pinned host memory onto the controller's existing
 CUDA stream before the next solve, so rollouts never observe a partial field.
 
 Each predicted Frenet state is converted to ENU on the GPU. Clearance is the

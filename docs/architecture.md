@@ -105,15 +105,19 @@ warm-start/reference/braking special samples, clips in physical units, rolls out
 all samples, and computes robust softmax weights. Non-finite rollouts are assigned
 the worst finite cost; an all-invalid population falls back to uniform weights.
 
-The ROS runtime runs solve and publication timers independently. A solve is
-performed only when a new EKF generation is available; the publication timer
-selects the newest completed solution and never republishes an older
-generation. A publication-time age guard drops delayed solutions. This permits
-high-rate optimization without increasing the downstream actuator command
-rate or falsely recording an unpublished command as control feedback.
-An independent 10 Hz terminal-info timer logs a shared immutable snapshot of
-the last successfully published solution without recalculating or copying the
-rollout population. It creates no ROS diagnostics topic.
+The ROS runtime owns independent solver, command-publication, terminal-info,
+visualization, and obstacle workers. The ROS EKF callback only validates and
+replaces a latest-state mailbox, so projection or CUDA work cannot hold up new
+state delivery. A solve is performed only when a new EKF generation is
+available; the publication worker selects the newest completed solution and
+never republishes an older generation. Completion wakes the publisher
+immediately. A separate rate gate is needed only when the configured publication
+rate is lower than the solver rate, avoiding an additional timer-phase delay
+when both rates match. A publication-time age guard drops delayed solutions.
+This permits high-rate optimization without increasing the
+downstream actuator command rate or falsely recording an unpublished command
+as control feedback. The terminal-info worker logs a shared immutable snapshot
+of the last successfully published solution and creates no diagnostics topic.
 
 The robustness costs retained from EPIC include own-`s` speed and boundary
 lookup, boundary ramp, latched discounted crash cost, sideslip shaping and a
@@ -133,9 +137,10 @@ is still accepted for external configuration directories.
 
 The obstacle path is separate from the state and solve callbacks. A latest-only
 LiDAR worker deskews rays with accepted pose history, builds a rolling ENU
-signed distance field, and atomically hands an immutable generation to the
-runtime. The next solve copies only a complete new field to the existing CUDA
-stream; missing scans leave the previous complete field active.
+signed distance field using persistent transform scratch buffers, and atomically
+hands an immutable generation to the runtime. The next solve queues only a
+complete new field on its existing CUDA stream without an extra stream-wide
+barrier; missing scans leave the previous complete field active.
 
 Analytic Fiala/kinematic rollouts are fused per sample. Neural dynamics perform
 one TensorRT batch over all `K` samples per integration stage. CUDA buffers and

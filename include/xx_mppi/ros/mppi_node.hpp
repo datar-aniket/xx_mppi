@@ -38,6 +38,8 @@ class MppiNode : public rclcpp::Node {
   double maximum_state_age_s_{};
   double future_tolerance_s_{};
   std::unique_ptr<MppiRosRuntime> runtime_;
+  rclcpp::CallbackGroup::SharedPtr state_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr scan_callback_group_;
   rclcpp::Subscription<xxcar_msgs::msg::EkfState>::SharedPtr state_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
   std::optional<std::int64_t> previous_pose_time_ns_;

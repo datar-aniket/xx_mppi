@@ -10,12 +10,12 @@ launch arguments. No MCU/UART publisher belongs to this package.
 Obstacle avoidance subscribes to `/scan` (`sensor_msgs/msg/LaserScan`) in frame
 `laser`. It obtains `base_link <- laser` once from TF, then reuses the cached
 static transform. SDF construction runs on a latest-scan-wins worker thread and
-does not execute in the state or MPPI timer callbacks. See
+does not execute in the state callback or solver worker. See
 `docs/obstacle_avoidance.md` for deskew and cost details.
 With `publish_visualization:=true`, a normalized `nav_msgs/msg/OccupancyGrid`
 is published on `xx_mppi/obstacle_costmap` at `visualization_rate_hz` (20 Hz in
-the shipped config). Costmap conversion/publication and terminal info logging
-run on the background visualization worker.
+the shipped config). Costmap conversion/publication runs on the background
+visualization worker; terminal logging has its own worker.
 
 The adapter uses `header.stamp` as `solution_pose_time`, the ENU pose quaternion
 for yaw, body-FLU horizontal twist magnitude for speed, `angular_velocity.z`
@@ -67,11 +67,13 @@ refer to `solution_pose_time + i * dt`; both arrays contain `horizon` entries.
 
 `solve_rate_hz` and `control_publish_rate_hz` in `mppi.yaml` are independent.
 The solver consumes at most one solve per accepted EKF generation and atomically
-replaces the latest solution. The publication timer emits each solution at most
-once, so the configured control rate is an upper bound rather than a stale
-command hold loop. `maximum_solution_age_s` drops a completed solution if its
-source pose is already too old when the publication timer runs; set it to zero
-only for deliberate bag replay.
+replaces the latest solution. The independent publication worker emits each
+solution at most once, so the configured control rate is an upper bound rather
+than a stale command hold loop. A completed solve wakes that worker immediately;
+a separate rate interval is enforced only when publication is configured slower
+than solving. `maximum_solution_age_s` drops a completed solution if its source
+pose is already too old when the publication worker runs; set it to zero only
+for deliberate bag replay.
 
 The physical derivative costs are configured in `weights.yaml`:
 

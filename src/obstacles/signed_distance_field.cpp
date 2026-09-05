@@ -48,19 +48,13 @@ void DistanceTransform1D(
   }
 }
 
-std::vector<float> SquaredDistanceTransform(
+void SquaredDistanceTransform(
   const std::vector<std::uint8_t> & feature, const std::uint32_t width,
-  const std::uint32_t height)
+  const std::uint32_t height, std::vector<float> & first,
+  std::vector<float> & result, std::vector<float> & input,
+  std::vector<float> & output, std::vector<std::int32_t> & locations,
+  std::vector<float> & boundaries)
 {
-  const std::size_t cells = static_cast<std::size_t>(width) * height;
-  std::vector<float> first(cells);
-  std::vector<float> result(cells);
-  const std::uint32_t longest = std::max(width, height);
-  std::vector<float> input(longest);
-  std::vector<float> output(longest);
-  std::vector<std::int32_t> locations(longest);
-  std::vector<float> boundaries(static_cast<std::size_t>(longest) + 1U);
-
   for (std::uint32_t y = 0; y < height; ++y) {
     for (std::uint32_t x = 0; x < width; ++x) {
       input[x] = feature[static_cast<std::size_t>(y) * width + x] ? 0.0F : kLargeDistance;
@@ -79,7 +73,6 @@ std::vector<float> SquaredDistanceTransform(
       result[static_cast<std::size_t>(y) * width + x] = output[y];
     }
   }
-  return result;
 }
 
 }  // namespace
@@ -100,11 +93,22 @@ SignedDistanceFieldBuilder::SignedDistanceFieldBuilder(ObstacleConfig config)
   if (width_ < 2U || height_ < 2U) {
     throw std::invalid_argument("signed-distance-field grid is too small");
   }
+  const std::size_t cells = static_cast<std::size_t>(width_) * height_;
+  const std::size_t longest = std::max(width_, height_);
+  occupied_.resize(cells);
+  free_space_.resize(cells);
+  transform_first_.resize(cells);
+  distance_to_obstacle_.resize(cells);
+  distance_to_free_.resize(cells);
+  transform_input_.resize(longest);
+  transform_output_.resize(longest);
+  transform_locations_.resize(longest);
+  transform_boundaries_.resize(longest + 1U);
 }
 
 ObstacleField SignedDistanceFieldBuilder::Build(
   const std::vector<Point2D> & obstacle_points, const Pose2D & center,
-  const std::int64_t stamp_ns, const std::uint64_t generation) const
+  const std::int64_t stamp_ns, const std::uint64_t generation)
 {
   ObstacleField field;
   field.stamp_ns = stamp_ns;
@@ -115,7 +119,8 @@ ObstacleField SignedDistanceFieldBuilder::Build(
   field.origin_east_m = center.east_m - 0.5F * static_cast<float>(width_) * field.resolution_m;
   field.origin_north_m = center.north_m - 0.5F * static_cast<float>(height_) * field.resolution_m;
   const std::size_t cells = static_cast<std::size_t>(width_) * height_;
-  std::vector<std::uint8_t> occupied(cells, 0U);
+  std::fill(occupied_.begin(), occupied_.end(), 0U);
+  bool has_obstacle = false;
   const int inflation_cells = static_cast<int>(std::ceil(
       config_.obstacle_inflation_radius_m / field.resolution_m));
   const float inflation_squared = config_.obstacle_inflation_radius_m *
@@ -142,29 +147,32 @@ ObstacleField SignedDistanceFieldBuilder::Build(
         if (inflation_cells == 0 ||
           offset_x * offset_x + offset_y * offset_y <= inflation_squared)
         {
-          occupied[static_cast<std::size_t>(y) * width_ + static_cast<std::uint32_t>(x)] = 1U;
+          occupied_[static_cast<std::size_t>(y) * width_ +
+            static_cast<std::uint32_t>(x)] = 1U;
+          has_obstacle = true;
         }
       }
     }
   }
 
-  const bool has_obstacle = std::any_of(
-    occupied.begin(), occupied.end(), [](const std::uint8_t value) {return value != 0U;});
   field.signed_distance_m.assign(cells, config_.maximum_distance_m);
   if (!has_obstacle) {
     return field;
   }
-  std::vector<std::uint8_t> free_space(cells);
   std::transform(
-    occupied.begin(), occupied.end(), free_space.begin(),
+    occupied_.begin(), occupied_.end(), free_space_.begin(),
     [](const std::uint8_t value) {return value == 0U ? 1U : 0U;});
-  const auto distance_to_obstacle = SquaredDistanceTransform(occupied, width_, height_);
-  const auto distance_to_free = SquaredDistanceTransform(free_space, width_, height_);
+  SquaredDistanceTransform(
+    occupied_, width_, height_, transform_first_, distance_to_obstacle_,
+    transform_input_, transform_output_, transform_locations_, transform_boundaries_);
+  SquaredDistanceTransform(
+    free_space_, width_, height_, transform_first_, distance_to_free_,
+    transform_input_, transform_output_, transform_locations_, transform_boundaries_);
   for (std::size_t index = 0; index < cells; ++index) {
     const float cells_distance = std::sqrt(
-      occupied[index] ? distance_to_free[index] : distance_to_obstacle[index]);
+      occupied_[index] ? distance_to_free_[index] : distance_to_obstacle_[index]);
     const float signed_distance = cells_distance * field.resolution_m *
-      (occupied[index] ? -1.0F : 1.0F);
+      (occupied_[index] ? -1.0F : 1.0F);
     field.signed_distance_m[index] = std::clamp(
       signed_distance, -config_.maximum_distance_m, config_.maximum_distance_m);
   }

@@ -1480,9 +1480,10 @@ class CudaMppiController::Impl {
     {
       throw std::invalid_argument("obstacle field does not match configured CUDA grid");
     }
-    // The pinned staging buffer and device field share the solver stream. Wait
-    // only when a new scan replaces them, never in the control solve itself.
-    CheckCuda(cudaStreamSynchronize(stream_), "wait before obstacle staging update");
+    // This method and Solve are owned by the dedicated solver thread. Solve
+    // synchronizes its completion event before returning, and this upload is
+    // queued on the same stream before the next solve, so an extra full-stream
+    // synchronization here only adds map-update jitter.
     std::copy(
       field.signed_distance_m.begin(), field.signed_distance_m.end(), obstacle_staging_);
     CheckCuda(cudaMemcpyAsync(
@@ -1495,7 +1496,7 @@ class CudaMppiController::Impl {
   }
 
   void ClearObstacleField() {
-    CheckCuda(cudaStreamSynchronize(stream_), "wait before clearing obstacle field");
+    // Solver-thread ownership guarantees no concurrent kernel reads here.
     obstacle_field_.valid = false;
   }
 
