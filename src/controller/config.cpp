@@ -321,8 +321,13 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   config.costs.crash = GetOr(weights_yaml["crash"], "weight", config.costs.crash);
   config.costs.crash_discount = GetOr(
     weights_yaml["crash"], "discount", config.costs.crash_discount);
-  config.costs.crash_buffer_m = GetOr(
-    weights_yaml["crash"], "buffer", config.costs.crash_buffer_m);
+  const auto crash = weights_yaml["crash"];
+  // `buffer` was the original name. Keep accepting it so external tuning
+  // directories do not silently lose their safety margin, but prefer the
+  // geometrically clearer `padding` name in new configurations.
+  config.costs.crash_buffer_m = crash && crash["padding"] ?
+    crash["padding"].as<float>() :
+    GetOr(crash, "buffer", config.costs.crash_buffer_m);
   config.costs.sideslip = GetOr(
     weights_yaml["sideslip_limit"], "weight", config.costs.sideslip);
   config.costs.maximum_sideslip_rad = GetOr(
@@ -394,6 +399,7 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   }
   if (!(config.costs.boundary_margin_m > 0.0F) ||
     !(config.costs.crash_discount > 0.0F && config.costs.crash_discount <= 1.0F) ||
+    !std::isfinite(config.costs.crash_buffer_m) || config.costs.crash_buffer_m < 0.0F ||
     !(config.costs.maximum_sideslip_rad > 0.0F) ||
     !(config.costs.wheel_slip_band >= 0.0F) ||
     !std::isfinite(config.costs.longitudinal_acceleration) ||

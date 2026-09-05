@@ -125,6 +125,12 @@ latching there would set the same flag across the whole population and remove
 all boundary discrimination from the solve. Online lambda and diagonal-sigma adaptation use effective
 sample size and selection-pressure statistics.
 
+`weights.yaml` separates the smooth boundary ramp from the hard crash limit.
+`boundary.margin` selects how far inside the CSV bounds the shaping ramp starts,
+while `crash.padding` moves both hard limits toward the raceline: the usable
+corridor is `[e_min + padding, e_max - padding]`. The legacy `crash.buffer` key
+is still accepted for external configuration directories.
+
 The obstacle path is separate from the state and solve callbacks. A latest-only
 LiDAR worker deskews rays with accepted pose history, builds a rolling ENU
 signed distance field, and atomically hands an immutable generation to the

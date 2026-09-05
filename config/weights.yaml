@@ -3,12 +3,12 @@ reference_tracking:
   speed: 0.0
   sideslip: 0.0
   driven_wheel_speed: 0.0
-  lateral_deviation: 1.0
-  relative_heading: 0.0
+  lateral_deviation: 5.0
+  relative_heading: 0.5
   path_evolution: 0.0
 
 velocity_profile: 
-  weight: 10.0
+  weight: 20.0
   over_weight: 2.0
 
 progress: 

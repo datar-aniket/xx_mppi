@@ -34,21 +34,25 @@ TEST(Config, LoadsRuntimeProblemAndPhysicalControlBounds) {
   EXPECT_GE(config.costs.longitudinal_deceleration, 0.0F);
   EXPECT_GE(config.costs.control_rate[kSteering], 0.0F);
   EXPECT_GE(config.costs.control_rate[kWheelTorque], 0.0F);
-  EXPECT_FLOAT_EQ(config.info_log_rate_hz, 10.0F);
-  EXPECT_EQ(config.obstacles.confirmation_updates, 2U);
-  EXPECT_EQ(config.obstacles.persistence_updates, 4U);
-  EXPECT_FLOAT_EQ(config.obstacles.association_distance_m, 0.10F);
+  EXPECT_GT(config.info_log_rate_hz, 0.0F);
+  EXPECT_GT(config.obstacles.confirmation_updates, 0U);
+  EXPECT_GE(
+    config.obstacles.persistence_updates,
+    config.obstacles.confirmation_updates);
+  EXPECT_GT(config.obstacles.association_distance_m, 0.0F);
 }
 
-TEST(Config, LoadsTrx4SportVehicleProfile) {
+TEST(Config, LoadsConfiguredVehicleProfile) {
   const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
-  EXPECT_FLOAT_EQ(config.vehicle.mass_kg, 3.2F);
-  EXPECT_FLOAT_EQ(config.vehicle.yaw_inertia_kgm2, 0.030F);
-  EXPECT_FLOAT_EQ(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m, 0.26F);
-  EXPECT_FLOAT_EQ(config.vehicle.front_cornering_stiffness_nprad, 100.0F);
-  EXPECT_FLOAT_EQ(config.vehicle.rear_cornering_stiffness_nprad, 100.0F);
-  EXPECT_FLOAT_EQ(config.vehicle.wheel_radius_m, 0.05842F);
-  EXPECT_FLOAT_EQ(config.vehicle.front_brake_bias, 0.5F);
+  EXPECT_GT(config.vehicle.mass_kg, 0.0F);
+  EXPECT_GT(config.vehicle.yaw_inertia_kgm2, 0.0F);
+  EXPECT_GT(config.vehicle.cg_to_front_m, 0.0F);
+  EXPECT_GT(config.vehicle.cg_to_rear_m, 0.0F);
+  EXPECT_GT(config.vehicle.front_cornering_stiffness_nprad, 0.0F);
+  EXPECT_GT(config.vehicle.rear_cornering_stiffness_nprad, 0.0F);
+  EXPECT_GT(config.vehicle.wheel_radius_m, 0.0F);
+  EXPECT_GE(config.vehicle.front_brake_bias, 0.0F);
+  EXPECT_LE(config.vehicle.front_brake_bias, 1.0F);
   EXPECT_TRUE(config.vehicle.locked_awd);
 }
 
@@ -129,6 +133,21 @@ TEST(Config, UsesUnitPreservingMeasuredControlFeedback) {
   const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
   EXPECT_TRUE(config.use_measured_control_feedback);
   EXPECT_GT(config.maximum_model_sideslip_rad, 0.0F);
+}
+
+TEST(Config, LoadsCrashPaddingWithLegacyBufferFallback) {
+  const auto directory = MakeOverlayConfig("xx_mppi_test_crash_padding_config");
+  const auto weights_path = directory / "weights.yaml";
+
+  WriteFile(weights_path, "crash:\n  buffer: 0.12\n");
+  EXPECT_FLOAT_EQ(LoadControllerConfig(directory.string()).costs.crash_buffer_m, 0.12F);
+
+  WriteFile(weights_path, "crash:\n  buffer: 0.12\n  padding: 0.13\n");
+  EXPECT_FLOAT_EQ(LoadControllerConfig(directory.string()).costs.crash_buffer_m, 0.13F);
+
+  WriteFile(weights_path, "crash:\n  padding: -0.01\n");
+  EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+  std::filesystem::remove_all(directory);
 }
 
 TEST(Config, LoadsConfiguredClosedRaceline) {

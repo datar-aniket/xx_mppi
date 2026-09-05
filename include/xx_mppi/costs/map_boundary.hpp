@@ -17,10 +17,12 @@ struct MapBoundaryEvaluation {
 
 // Static-track corridor cost shared by the CPU oracle and CUDA rollout. Bounds
 // are evaluated at each rollout state's own s before calling this function.
+// crash_padding_m moves both hard limits toward the raceline (e=0), producing
+// the usable corridor [e_min + padding, e_max - padding].
 XXCAR_BOUNDARY_HD inline MapBoundaryEvaluation EvaluateMapBoundary(
   const float lateral_deviation_m, const float e_min_m, const float e_max_m,
   const float shaping_weight, const float requested_margin_m,
-  const float crash_buffer_m)
+  const float crash_padding_m)
 {
   const float upper_margin = fminf(
     fmaxf(0.9F * e_max_m, 1.0e-3F), requested_margin_m);
@@ -32,8 +34,8 @@ XXCAR_BOUNDARY_HD inline MapBoundaryEvaluation EvaluateMapBoundary(
     (e_min_m + lower_margin) - lateral_deviation_m, 0.0F) / lower_margin;
   return MapBoundaryEvaluation{
     shaping_weight * (upper * upper + lower * lower),
-    lateral_deviation_m > e_max_m - crash_buffer_m ||
-    lateral_deviation_m < e_min_m + crash_buffer_m};
+    lateral_deviation_m > e_max_m - crash_padding_m ||
+    lateral_deviation_m < e_min_m + crash_padding_m};
 }
 
 }  // namespace xxcar::mppi

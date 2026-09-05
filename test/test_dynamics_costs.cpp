@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include "xx_mppi/costs/map_boundary.hpp"
 #include "xx_mppi/costs/cost_evaluator.hpp"
 #include "xx_mppi/dynamics/analytic_dynamics.hpp"
 #include "xx_mppi/dynamics/rollout.hpp"
@@ -173,6 +174,21 @@ TEST(Costs, CrashedRolloutCostsMoreThanInBoundsRollout) {
   const float crashed_cost = evaluator.Evaluate(
     crashed, reference.controls, reference, Control{});
   EXPECT_GT(crashed_cost, safe_cost + 1000.0F);
+}
+
+TEST(Costs, CrashPaddingShrinksBothBoundsTowardRaceline) {
+  constexpr float e_min = -1.0F;
+  constexpr float e_max = 1.0F;
+  constexpr float padding = 0.10F;
+
+  EXPECT_FALSE(EvaluateMapBoundary(0.90F, e_min, e_max, 1.0F, 0.2F, padding).violated);
+  EXPECT_TRUE(EvaluateMapBoundary(0.91F, e_min, e_max, 1.0F, 0.2F, padding).violated);
+  EXPECT_FALSE(EvaluateMapBoundary(-0.90F, e_min, e_max, 1.0F, 0.2F, padding).violated);
+  EXPECT_TRUE(EvaluateMapBoundary(-0.91F, e_min, e_max, 1.0F, 0.2F, padding).violated);
+
+  // These states remain inside the physical CSV bounds when padding is zero.
+  EXPECT_FALSE(EvaluateMapBoundary(0.91F, e_min, e_max, 1.0F, 0.2F, 0.0F).violated);
+  EXPECT_FALSE(EvaluateMapBoundary(-0.91F, e_min, e_max, 1.0F, 0.2F, 0.0F).violated);
 }
 
 TEST(Costs, AddsAsymmetricAccelerationAndPhysicalControlRatePenalties) {
