@@ -338,3 +338,6 @@ void MppiNode::ObstacleWorker() {
 }
 
 }  // namespace xxcar::mppi
+
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(xxcar::mppi::MppiNode)
