@@ -321,13 +321,8 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   config.costs.crash = GetOr(weights_yaml["crash"], "weight", config.costs.crash);
   config.costs.crash_discount = GetOr(
     weights_yaml["crash"], "discount", config.costs.crash_discount);
-  const auto crash = weights_yaml["crash"];
-  // `buffer` was the original name. Keep accepting it so external tuning
-  // directories do not silently lose their safety margin, but prefer the
-  // geometrically clearer `padding` name in new configurations.
-  config.costs.crash_buffer_m = crash && crash["padding"] ?
-    crash["padding"].as<float>() :
-    GetOr(crash, "buffer", config.costs.crash_buffer_m);
+  config.costs.crash_buffer_m = GetOr(
+    weights_yaml["crash"], "buffer", config.costs.crash_buffer_m);
   config.costs.sideslip = GetOr(
     weights_yaml["sideslip_limit"], "weight", config.costs.sideslip);
   config.costs.maximum_sideslip_rad = GetOr(
@@ -399,7 +394,6 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   }
   if (!(config.costs.boundary_margin_m > 0.0F) ||
     !(config.costs.crash_discount > 0.0F && config.costs.crash_discount <= 1.0F) ||
-    !std::isfinite(config.costs.crash_buffer_m) || config.costs.crash_buffer_m < 0.0F ||
     !(config.costs.maximum_sideslip_rad > 0.0F) ||
     !(config.costs.wheel_slip_band >= 0.0F) ||
     !std::isfinite(config.costs.longitudinal_acceleration) ||
@@ -437,31 +431,32 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     throw std::runtime_error("model.yaml must define raceline_path");
   }
 
-  // The driven-wheel state is the stiffest mode in the model: the tire force
-  // reacts to slip almost instantly, so the wheel-speed loop has eigenvalue
-  // -r^2 C / I. Integrating it above the explicit stability limit makes the
-  // wheel speed ring, which drags the body speed negative and produces rollouts
-  // that reverse before moving off. Half the marginal limit is the usable step.
-  const float stiffest_stiffness = std::max(
-    config.vehicle.front_cornering_stiffness_nprad,
-    config.vehicle.rear_cornering_stiffness_nprad);
-  const float marginal_step_s = 2.0F * config.vehicle.driven_wheel_inertia_kgm2 /
-    std::max(
-      config.vehicle.wheel_radius_m * config.vehicle.wheel_radius_m *
-      stiffest_stiffness, 1.0e-9F);
-  const auto substeps = static_cast<float>(
-    config.mppi.integration_substeps == 0U ? 1U : config.mppi.integration_substeps);
-  const float step_s = config.mppi.dt_s / substeps;
-  if (!(step_s < 0.5F * marginal_step_s)) {
-    const auto required = static_cast<unsigned>(std::ceil(
-        config.mppi.dt_s / (0.5F * marginal_step_s)));
-    throw std::runtime_error(
-            "integration step " + std::to_string(step_s) +
-            " s exceeds the driven-wheel stability limit " +
-            std::to_string(0.5F * marginal_step_s) +
-            " s for this vehicle profile; raise integration_substeps to at least " +
-            std::to_string(required) + ", lower dt, or re-identify "
-            "driven_wheel_inertia_kgm2 / cornering stiffness");
+  if (config.model_kind == ModelKind::kDynamicBicycleFiala) {
+    // The analytic Fiala driven-wheel state is the stiffest mode: the tire
+    // force reacts to slip almost instantly, so its explicit integration step
+    // is constrained by -r^2 C / I. This bound does not describe a learned
+    // derivative model and must not force extra TensorRT evaluations.
+    const float stiffest_stiffness = std::max(
+      config.vehicle.front_cornering_stiffness_nprad,
+      config.vehicle.rear_cornering_stiffness_nprad);
+    const float marginal_step_s = 2.0F * config.vehicle.driven_wheel_inertia_kgm2 /
+      std::max(
+        config.vehicle.wheel_radius_m * config.vehicle.wheel_radius_m *
+        stiffest_stiffness, 1.0e-9F);
+    const auto substeps = static_cast<float>(
+      config.mppi.integration_substeps == 0U ? 1U : config.mppi.integration_substeps);
+    const float step_s = config.mppi.dt_s / substeps;
+    if (!(step_s < 0.5F * marginal_step_s)) {
+      const auto required = static_cast<unsigned>(std::ceil(
+          config.mppi.dt_s / (0.5F * marginal_step_s)));
+      throw std::runtime_error(
+              "integration step " + std::to_string(step_s) +
+              " s exceeds the driven-wheel stability limit " +
+              std::to_string(0.5F * marginal_step_s) +
+              " s for this vehicle profile; raise integration_substeps to at least " +
+              std::to_string(required) + ", lower dt, or re-identify "
+              "driven_wheel_inertia_kgm2 / cornering stiffness");
+    }
   }
   return config;
 }

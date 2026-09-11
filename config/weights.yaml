@@ -3,29 +3,30 @@ reference_tracking:
   speed: 0.0
   sideslip: 0.0
   driven_wheel_speed: 0.0
-  lateral_deviation: 10.0
+  lateral_deviation: 500.0
   relative_heading: 1.0
   path_evolution: 0.0
 
 velocity_profile: 
-  weight: 100.0
+  weight: 50.0
   over_weight: 0.05
 
 progress: 
-  weight: 1.0
+  weight: 20.0
 
 boundary: 
-  weight: 10.0
-  margin: 0.2
+  weight: 200.0
+  margin: 0.3
 
 crash: 
   weight: 600000.0
+  # weight: 600.0
   discount: 0.9
-  buffer: 0.1
+  buffer: 0.18
 
 sideslip_limit: 
   weight: 100.0
-  max_slip: 1.2
+  max_slip: 1.5
   kill_weight: 4000.0
 
 lateral_damping: 
@@ -47,7 +48,7 @@ control_smoothness:
 # Penalize predicted longitudinal acceleration asymmetrically. Values are
 # derived from consecutive speed states with the configured MPPI dt.
 longitudinal_acceleration:
-  acceleration_weight: 0.001
+  acceleration_weight: 10.0
   deceleration_weight: 0.000
 
 # Physical command-rate penalties, including the transition from measured EKF
