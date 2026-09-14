@@ -830,11 +830,32 @@ __global__ void ComputeEss(const float * sum_squares, float * ess) {
   }
 }
 
+// The weighted averages below reduce over all K samples for each output
+// element. One thread per output element leaves the horizon-sized grid far too
+// small to fill the GPU, and each thread then walks the sample axis alone.
+// Giving one block to each output element lets its threads stride over the
+// samples, which raises the memory-level parallelism on the strided sample axis
+// by the block size. The block size is fixed, so the reduction order, and
+// therefore the floating-point result, is deterministic.
+constexpr std::uint32_t kWeightedThreads = 128U;
+
+__device__ float BlockSum(float value, float * scratch) {
+  scratch[threadIdx.x] = value;
+  __syncthreads();
+  for (std::uint32_t span = kWeightedThreads / 2U; span > 0U; span >>= 1U) {
+    if (threadIdx.x < span) {
+      scratch[threadIdx.x] += scratch[threadIdx.x + span];
+    }
+    __syncthreads();
+  }
+  return scratch[0];
+}
+
 __global__ void WeightedControls(
-  const float * weights, const Control * candidates, Control * updated,
-  const DeviceMppi config)
+  const float * __restrict__ weights, const Control * __restrict__ candidates,
+  Control * __restrict__ updated, const DeviceMppi config)
 {
-  const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t index = blockIdx.x;
   const std::size_t count = static_cast<std::size_t>(config.horizon) * kControlDim;
   if (index >= count) {
     return;
@@ -842,11 +863,18 @@ __global__ void WeightedControls(
   const std::size_t t = index / kControlDim;
   const std::size_t channel = index % kControlDim;
   float value = 0.0F;
-  for (std::uint32_t sample = 0; sample < config.samples; ++sample) {
-    value += weights[sample] * candidates[static_cast<std::size_t>(sample) * config.horizon + t][channel];
+  for (std::uint32_t sample = threadIdx.x; sample < config.samples;
+    sample += kWeightedThreads)
+  {
+    value += weights[sample] *
+      candidates[static_cast<std::size_t>(sample) * config.horizon + t][channel];
   }
-  updated[t][channel] = fminf(fmaxf(
-    value, config.control_min[channel]), config.control_max[channel]);
+  __shared__ float scratch[kWeightedThreads];
+  value = BlockSum(value, scratch);
+  if (threadIdx.x == 0U) {
+    updated[t][channel] = fminf(fmaxf(
+      value, config.control_min[channel]), config.control_max[channel]);
+  }
 }
 
 // Angle channels are averaged on the unit circle. A linear mean of headings
@@ -861,10 +889,10 @@ __device__ bool IsCircularChannel(const std::size_t channel, const DeviceMppi & 
 }
 
 __global__ void WeightedStates(
-  const float * weights, const State * trajectories, State * expected,
-  const DeviceMppi config)
+  const float * __restrict__ weights, const State * __restrict__ trajectories,
+  State * __restrict__ expected, const DeviceMppi config)
 {
-  const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t index = blockIdx.x;
   const std::size_t count = static_cast<std::size_t>(config.horizon + 1U) * kStateDim;
   if (index >= count) {
     return;
@@ -874,17 +902,28 @@ __global__ void WeightedStates(
   const bool circular = IsCircularChannel(channel, config);
   float value = 0.0F;
   float quadrature = 0.0F;
-  for (std::uint32_t sample = 0; sample < config.samples; ++sample) {
+  for (std::uint32_t sample = threadIdx.x; sample < config.samples;
+    sample += kWeightedThreads)
+  {
     const float entry =
       trajectories[static_cast<std::size_t>(sample) * (config.horizon + 1U) + t][channel];
+    const float weight = weights[sample];
     if (circular) {
-      value += weights[sample] * cosf(entry);
-      quadrature += weights[sample] * sinf(entry);
+      value += weight * cosf(entry);
+      quadrature += weight * sinf(entry);
     } else {
-      value += weights[sample] * entry;
+      value += weight * entry;
     }
   }
-  expected[t][channel] = circular ? atan2f(quadrature, value) : value;
+  __shared__ float scratch[kWeightedThreads];
+  value = BlockSum(value, scratch);
+  if (circular) {
+    __syncthreads();
+    quadrature = BlockSum(quadrature, scratch);
+  }
+  if (threadIdx.x == 0U) {
+    expected[t][channel] = circular ? atan2f(quadrature, value) : value;
+  }
 }
 
 __global__ void RolloutUpdatedControls(
@@ -903,27 +942,79 @@ __global__ void RolloutUpdatedControls(
   }
 }
 
-__global__ void SigmaStatistics(
-  const float * weights, const Control * perturbations, float * sigma_hat,
+// Adaptive-sigma statistics. Both accumulators are flat sums over every
+// (sample, step) pair,
+//   weighted[c]   = (1 / T)     * sum_{k,t} w_k * p[k][t][c]^2
+//   unweighted[c] = (1 / (K T)) * sum_{k,t}       p[k][t][c]^2
+// because the per-sample mean over t is linear and factors out. Summing over
+// the flat index rather than per channel keeps the perturbation reads coalesced
+// and spreads the K*T reduction over the whole GPU. Reducing per channel meant
+// kControlDim threads carried the entire reduction, which dominated the solve.
+//
+// The grid is a fixed size, so for a given K and T the summation order, and
+// therefore the floating-point result, is identical on every solve.
+constexpr std::uint32_t kSigmaBlocks = 64U;
+constexpr std::uint32_t kSigmaThreads = 256U;
+
+__global__ void SigmaPartials(
+  const float * __restrict__ weights, const Control * __restrict__ perturbations,
+  float * __restrict__ partials, const DeviceMppi config)
+{
+  const std::size_t total =
+    static_cast<std::size_t>(config.samples) * config.horizon;
+  const std::size_t stride =
+    static_cast<std::size_t>(gridDim.x) * blockDim.x;
+  float weighted[kControlDim] = {};
+  float unweighted[kControlDim] = {};
+  for (std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    index < total; index += stride)
+  {
+    const float weight = weights[index / config.horizon];
+    for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+      const float value = perturbations[index][channel];
+      const float square = value * value;
+      weighted[channel] += weight * square;
+      unweighted[channel] += square;
+    }
+  }
+
+  __shared__ float scratch[kSigmaThreads];
+  for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+    for (std::size_t half = 0; half < 2U; ++half) {
+      scratch[threadIdx.x] = half == 0U ? weighted[channel] : unweighted[channel];
+      __syncthreads();
+      for (std::uint32_t span = kSigmaThreads / 2U; span > 0U; span >>= 1U) {
+        if (threadIdx.x < span) {
+          scratch[threadIdx.x] += scratch[threadIdx.x + span];
+        }
+        __syncthreads();
+      }
+      if (threadIdx.x == 0U) {
+        partials[(blockIdx.x * kControlDim + channel) * 2U + half] = scratch[0];
+      }
+      __syncthreads();
+    }
+  }
+}
+
+__global__ void SigmaFinalize(
+  const float * __restrict__ partials, float * __restrict__ sigma_hat,
   const DeviceMppi config)
 {
-  const std::size_t channel = blockIdx.x * blockDim.x + threadIdx.x;
+  const std::size_t channel = threadIdx.x;
   if (channel >= kControlDim) {
     return;
   }
   float weighted = 0.0F;
   float unweighted = 0.0F;
-  for (std::uint32_t sample = 0; sample < config.samples; ++sample) {
-    float mean_square = 0.0F;
-    for (std::uint16_t t = 0; t < config.horizon; ++t) {
-      const float value = perturbations[static_cast<std::size_t>(sample) * config.horizon + t][channel];
-      mean_square += value * value;
-    }
-    mean_square /= static_cast<float>(config.horizon);
-    weighted += weights[sample] * mean_square;
-    unweighted += mean_square;
+  for (std::uint32_t block = 0; block < kSigmaBlocks; ++block) {
+    const std::size_t base = (block * kControlDim + channel) * 2U;
+    weighted += partials[base];
+    unweighted += partials[base + 1U];
   }
-  unweighted /= static_cast<float>(config.samples);
+  weighted /= static_cast<float>(config.horizon);
+  unweighted /=
+    static_cast<float>(config.samples) * static_cast<float>(config.horizon);
   sigma_hat[channel] = config.sigma[channel] *
     sqrtf(weighted + 1.0e-12F) / sqrtf(unweighted + 1.0e-12F);
 }
@@ -1097,6 +1188,7 @@ class CudaMppiController::Impl {
     Allocate(sum_squares_, 1U);
     Allocate(ess_, 1U);
     Allocate(sigma_hat_, kControlDim);
+    Allocate(sigma_partials_, kSigmaBlocks * kControlDim * 2U);
     Allocate(finite_flags_, samples);
     Allocate(finite_count_, 1U);
     if (model_kind == ModelKind::kTensorRtNeuralDerivative) {
@@ -1225,6 +1317,7 @@ class CudaMppiController::Impl {
     Free(sum_squares_);
     Free(ess_);
     Free(sigma_hat_);
+    Free(sigma_partials_);
     Free(finite_flags_);
     Free(finite_count_);
     Free(neural_states_);
@@ -1363,18 +1456,20 @@ class CudaMppiController::Impl {
       config_.num_samples, stream_);
     ComputeEss<<<1, 1, 0, stream_>>>(sum_squares_, ess_);
     const std::size_t control_values = horizon * kControlDim;
-    WeightedControls<<<static_cast<int>((control_values + 127U) / 128U), 128, 0, stream_>>>(
+    WeightedControls<<<static_cast<int>(control_values), kWeightedThreads, 0, stream_>>>(
       weights_device_, candidates_, updated_, device_config_);
     const std::size_t state_values = (horizon + 1U) * kStateDim;
     if (config_.expected_trajectory) {
-      WeightedStates<<<static_cast<int>((state_values + 127U) / 128U), 128, 0, stream_>>>(
+      WeightedStates<<<static_cast<int>(state_values), kWeightedThreads, 0, stream_>>>(
         weights_device_, trajectories_, expected_, device_config_);
     } else {
       RolloutUpdatedControls<<<1, 1, 0, stream_>>>(
         initial_state, updated_, expected_, track_, device_config_, vehicle_);
     }
-    SigmaStatistics<<<1, 32, 0, stream_>>>(
-      weights_device_, perturbations_, sigma_hat_, device_config_);
+    SigmaPartials<<<kSigmaBlocks, kSigmaThreads, 0, stream_>>>(
+      weights_device_, perturbations_, sigma_partials_, device_config_);
+    SigmaFinalize<<<1, 32, 0, stream_>>>(
+      sigma_partials_, sigma_hat_, device_config_);
     ShiftNominal<<<static_cast<int>((control_values + 127U) / 128U), 128, 0, stream_>>>(
       updated_, nominal_, shift_fraction, device_config_);
     CheckCuda(cudaGetLastError(), "launch MPPI CUDA pipeline");
@@ -1547,6 +1642,7 @@ class CudaMppiController::Impl {
   float * sum_squares_{nullptr};
   float * ess_{nullptr};
   float * sigma_hat_{nullptr};
+  float * sigma_partials_{nullptr};
   std::uint32_t * finite_flags_{nullptr};
   std::uint32_t * finite_count_{nullptr};
   State * neural_states_{nullptr};
