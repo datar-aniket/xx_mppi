@@ -48,6 +48,7 @@ target_compile_options(xx_mppi_core PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Wconversion>)
 
 add_library(xx_mppi_ros SHARED
+  src/ros/cost_terms_message.cpp
   src/ros/direct_control_message.cpp
   src/ros/ekf_state_adapter.cpp
   src/ros/mppi_node.cpp

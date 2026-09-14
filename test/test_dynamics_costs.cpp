@@ -247,5 +247,58 @@ TEST(Costs, ObstacleDistanceAndLatchPenalizeBlockedTrajectory) {
   EXPECT_GT(blocked_cost, clear_cost + 500.0F);
 }
 
+// The decomposition is only useful if it accounts for the whole cost. A term
+// added to the evaluator but forgotten in the breakdown shows up here as a
+// mismatch rather than as a quietly wrong debug topic.
+TEST(Costs, BreakdownTermsSumToTheTotalCost) {
+  const auto raceline = Raceline::LoadCsv(TestCsv());
+  auto reference = raceline.Sample(0.0F, 5U, 0.1F);
+  auto states = reference.states;
+  // Exercise every branch: an off-raceline excursion, asymmetric acceleration
+  // and deceleration, and a control sequence that is not the feed-forward one.
+  states[2U][kLateralDeviation] = 0.4F;
+  states[3U][kLateralDeviation] = 2.0F;  // outside the bounds, latches the crash
+  states[1U][kSpeed] = states[0U][kSpeed] + 0.3F;
+  states[2U][kSpeed] = states[1U][kSpeed] - 0.5F;
+  states[4U][kSideslip] = 1.2F;  // latches the sideslip kill
+  std::vector<Control> controls(reference.controls.size());
+  for (std::size_t t = 0; t < controls.size(); ++t) {
+    controls[t][kSteering] = 0.1F * static_cast<float>(t % 3U) - 0.1F;
+    controls[t][kWheelTorque] = 0.5F - 0.2F * static_cast<float>(t % 2U);
+  }
+  CostWeights weights;
+  weights.longitudinal_acceleration = 2.0F;
+  weights.longitudinal_deceleration = 3.0F;
+  weights.control_rate[kSteering] = 0.5F;
+  weights.control_rate[kWheelTorque] = 0.25F;
+  const CostEvaluator evaluator(weights, 0.1F);
+
+  CostTerms terms;
+  const float total = evaluator.Evaluate(
+    states, controls, reference, Control{}, nullptr, nullptr, nullptr, &terms);
+
+  ASSERT_TRUE(std::isfinite(total));
+  EXPECT_NEAR(terms.total(), total, 1.0e-3F * std::abs(total));
+  // The detail splits must partition their grouped term, not shadow it.
+  float tracking = 0.0F;
+  for (std::size_t i = 0; i < kStateDim; ++i) {
+    tracking += terms.reference_tracking[i];
+  }
+  EXPECT_NEAR(tracking, terms.values[kTermReferenceTracking],
+    1.0e-3F * std::abs(tracking));
+  for (std::size_t i = 0; i < kControlDim; ++i) {
+    EXPECT_GE(terms.control_effort[i], 0.0F);
+  }
+  EXPECT_NEAR(
+    terms.control_rate[kSteering] + terms.control_rate[kWheelTorque],
+    terms.values[kTermControlRate], 1.0e-3F);
+  // Latches fired at the step the trajectory first violated each limit.
+  EXPECT_EQ(terms.first_crash_step, 3U);
+  EXPECT_EQ(terms.first_sideslip_step, 4U);
+  EXPECT_EQ(terms.first_obstacle_step, kNoCostLatch);
+  // progress rewards arc length, so it is the one term that must be negative.
+  EXPECT_LT(terms.values[kTermProgress], 0.0F);
+}
+
 }  // namespace
 }  // namespace xxcar::mppi

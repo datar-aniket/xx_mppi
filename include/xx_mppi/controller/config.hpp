@@ -33,6 +33,10 @@ struct ControllerConfig {
   float maximum_solution_age_s{0.1F};
   float info_log_rate_hz{10.0F};
   float visualization_rate_hz{10.0F};
+  // Rate at which the solver is asked to decompose the published trajectory's
+  // cost into its individual terms. Debug output; keep it well below
+  // solve_rate_hz.
+  float cost_terms_rate_hz{10.0F};
   std::uint32_t num_rollouts{15U};
 };
 

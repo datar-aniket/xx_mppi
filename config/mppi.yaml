@@ -1,13 +1,17 @@
 # Jetson Orin NX target. K/T/dt are compile-independent runtime dimensions;
 # changing them reallocates persistent CUDA buffers but does not alter messages.
-num_samples: 1001
-horizon: 30
+num_samples: 4001
+horizon: 60
 dt: 0.1
-solve_rate_hz: 50.0
-control_publish_rate_hz: 40.0  # publish only the newest completed solution
+solve_rate_hz: 180.0
+control_publish_rate_hz: 180.0  # publish only the newest completed solution
 maximum_solution_age_s: 0.4    # zero disables the stale-command guard
 info_log_rate_hz: 10.0          # terminal ROS info summary of latest command
 visualization_rate_hz: 20.0  # reduced-rate RViz publishing and rollout snapshots
+# Rate of the per-term cost decomposition on xx_mppi/cost_terms. Only requested
+# when the node is launched with publish_cost_terms:=true; the breakdown runs
+# after the solve is measured, so it never enters the control path.
+cost_terms_rate_hz: 10.0
 num_rollouts: 15             # number of best-weighted sampled rollouts to draw
 # Rollout frame. frenet integrates (e, dphi, s) against the raceline curvature;
 # cartesian integrates (east, north, yaw_enu) and reprojects each state onto the

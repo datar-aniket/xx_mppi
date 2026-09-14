@@ -85,6 +85,11 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
   visualization.obstacle_costmap_topic = declare_parameter<std::string>(
     "obstacle_costmap_topic", "xx_mppi/obstacle_costmap");
 
+  CostTermsConfig cost_terms;
+  cost_terms.enabled = declare_parameter<bool>("publish_cost_terms", false);
+  cost_terms.topic = declare_parameter<std::string>(
+    "cost_terms_topic", "xx_mppi/cost_terms");
+
   if (config_directory.empty() || state_topic.empty() ||
     (!direct_control.enabled && trajectory_topic.empty()))
   {
@@ -101,7 +106,8 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
   }
 
   runtime_ = std::make_unique<MppiRosRuntime>(
-    *this, config_directory, trajectory_topic, direct_control, std::move(visualization));
+    *this, config_directory, trajectory_topic, direct_control, std::move(visualization),
+    std::move(cost_terms));
   state_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   scan_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   rclcpp::SubscriptionOptions state_options;

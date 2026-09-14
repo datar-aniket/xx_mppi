@@ -17,6 +17,7 @@
 #include <xxcar_msgs/msg/vehicle_control_trajectory.hpp>
 
 #include "xx_mppi/controller/mppi_controller.hpp"
+#include "xx_mppi/ros/cost_terms_message.hpp"
 #include "xx_mppi/ros/direct_control_message.hpp"
 #include "xx_mppi/ros/visualization.hpp"
 
@@ -33,7 +34,8 @@ class MppiRosRuntime {
     rclcpp::Node & node, const std::string & config_directory,
     const std::string & trajectory_topic = "vehicle_control_trajectory",
     DirectControlConfig direct_control = {},
-    VisualizationConfig visualization = {});
+    VisualizationConfig visualization = {},
+    CostTermsConfig cost_terms = {});
   ~MppiRosRuntime();
 
   void OnObservation(const VehicleObservation & observation);
@@ -51,6 +53,7 @@ class MppiRosRuntime {
   void PublishObstacleVisualization(
     const ObstacleField & field, const rclcpp::Time & publication_time);
   void PublishInfo(const PlannedTrajectory & trajectory, double publication_age_ms);
+  void PublishCostTerms(const PlannedTrajectory & trajectory);
   void QueueVisualization(
     std::shared_ptr<const PlannedTrajectory> trajectory,
     const rclcpp::Time & publication_time);
@@ -76,6 +79,8 @@ class MppiRosRuntime {
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr left_boundary_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr right_boundary_publisher_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr obstacle_costmap_publisher_;
+  CostTermsConfig cost_terms_;
+  rclcpp::Publisher<xxcar_msgs::msg::MppiCostTerms>::SharedPtr cost_terms_publisher_;
   std::chrono::nanoseconds solve_period_{};
   std::chrono::nanoseconds control_publication_period_{};
   std::chrono::nanoseconds info_log_period_{};
@@ -103,12 +108,18 @@ class MppiRosRuntime {
   std::chrono::nanoseconds visualization_period_{};
   std::chrono::steady_clock::time_point next_visualization_time_{};
   std::chrono::steady_clock::time_point next_costmap_time_{};
+  std::chrono::nanoseconds cost_terms_period_{};
+  std::chrono::steady_clock::time_point next_cost_terms_time_{};
   std::mutex visualization_mutex_;
   std::condition_variable visualization_cv_;
   std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>>
   pending_visualization_;
   std::optional<std::pair<std::shared_ptr<const ObstacleField>, rclcpp::Time>>
   pending_obstacle_visualization_;
+  // Cost term debug rides the visualization worker rather than a thread of its
+  // own: it is gated to its own rate in SolveOnce and only needs to stay off
+  // the solver and control threads.
+  std::shared_ptr<const PlannedTrajectory> pending_cost_terms_;
   bool stop_visualization_{false};
   std::thread solver_thread_;
   std::thread control_thread_;
