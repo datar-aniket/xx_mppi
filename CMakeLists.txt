@@ -17,6 +17,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -59,9 +60,21 @@ target_include_directories(xx_mppi_ros PUBLIC
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(xx_mppi_ros xx_mppi_core)
 ament_target_dependencies(
-  xx_mppi_ros ament_index_cpp geometry_msgs nav_msgs rclcpp
+  xx_mppi_ros ament_index_cpp geometry_msgs nav_msgs rclcpp rclcpp_components
   sensor_msgs std_msgs tf2 tf2_ros visualization_msgs xxcar_msgs)
 target_compile_options(xx_mppi_ros PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+
+# Registers xxcar::mppi::MppiNode as an rclcpp_components plugin (see
+# RCLCPP_COMPONENTS_REGISTER_NODE in mppi_node.cpp) so it can be loaded into a
+# shared component container process alongside gpu_mcl/ekf_mcu_driver for
+# zero-copy intra-process topic delivery -- see
+# xxCAR_bringup/launch/race_container.launch.py. The standalone xx_mppi_node
+# executable below (with its own tuned MultiThreadedExecutor) is unaffected
+# and still works as before.
+rclcpp_components_register_node(xx_mppi_ros
+  PLUGIN "xxcar::mppi::MppiNode"
+  EXECUTABLE xx_mppi_component_node
+)
 
 add_executable(xx_mppi_node src/ros/main.cpp)
 target_link_libraries(xx_mppi_node xx_mppi_ros)
