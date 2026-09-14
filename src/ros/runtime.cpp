@@ -19,11 +19,12 @@ namespace xxcar::mppi {
 MppiRosRuntime::MppiRosRuntime(
   rclcpp::Node & node, const std::string & config_directory,
   const std::string & trajectory_topic, DirectControlConfig direct_control,
-  VisualizationConfig visualization)
+  VisualizationConfig visualization, CostTermsConfig cost_terms)
 : node_(node),
   controller_(MppiControllerBuilder::FromConfigDirectory(config_directory)),
   direct_control_(std::move(direct_control)),
-  visualization_(std::move(visualization))
+  visualization_(std::move(visualization)),
+  cost_terms_(std::move(cost_terms))
 {
   RCLCPP_INFO(
     node_.get_logger(), "Loaded raceline '%s' (%zu points, %.3f m lap)",
@@ -70,6 +71,21 @@ MppiRosRuntime::MppiRosRuntime(
         1.0e9 / static_cast<double>(controller_->config().visualization_rate_hz))));
     next_visualization_time_ = std::chrono::steady_clock::now();
     next_costmap_time_ = next_visualization_time_;
+  }
+  if (cost_terms_.enabled) {
+    if (cost_terms_.topic.empty()) {
+      throw std::invalid_argument("cost terms topic must not be empty");
+    }
+    cost_terms_publisher_ = node_.create_publisher<xxcar_msgs::msg::MppiCostTerms>(
+      cost_terms_.topic, rclcpp::QoS(1).best_effort());
+    cost_terms_period_ = std::chrono::nanoseconds(
+      static_cast<std::int64_t>(std::llround(
+        1.0e9 / static_cast<double>(controller_->config().cost_terms_rate_hz))));
+    next_cost_terms_time_ = std::chrono::steady_clock::now();
+    RCLCPP_INFO(
+      node_.get_logger(), "MPPI cost term debug on '%s' at %.3f Hz",
+      cost_terms_.topic.c_str(),
+      static_cast<double>(controller_->config().cost_terms_rate_hz));
   }
   const auto solve_period_ns = static_cast<std::int64_t>(std::llround(
       1.0e9 / static_cast<double>(controller_->config().solve_rate_hz)));
@@ -135,6 +151,7 @@ MppiRosRuntime::~MppiRosRuntime() {
       std::lock_guard<std::mutex> lock(visualization_mutex_);
       stop_visualization_ = true;
       pending_visualization_.reset();
+      pending_cost_terms_.reset();
     }
     visualization_cv_.notify_one();
     visualization_thread_.join();
@@ -193,6 +210,32 @@ void MppiRosRuntime::PublishInfo(
     static_cast<double>(diagnostics.effective_sample_size),
     static_cast<unsigned>(diagnostics.finite_rollouts), publication_age_ms,
     solution_age_ms);
+  if (diagnostics.cost_terms) {
+    // The single largest positive term, which is the one question the summed
+    // cost above can never answer.
+    const auto & terms = *diagnostics.cost_terms;
+    std::size_t dominant = 0U;
+    for (std::size_t i = 1U; i < kCostTermCount; ++i) {
+      if (terms.values[i] > terms.values[dominant]) {
+        dominant = i;
+      }
+    }
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "MPPI cost terms: total=%.6g dominant=%s (%.6g) clearance=%.3f m",
+      static_cast<double>(terms.total()), CostTermName(dominant),
+      static_cast<double>(terms.values[dominant]),
+      static_cast<double>(terms.minimum_clearance_m));
+  }
+}
+
+void MppiRosRuntime::PublishCostTerms(const PlannedTrajectory & trajectory) {
+  if (!cost_terms_publisher_ || !trajectory.diagnostics.cost_terms) {
+    return;
+  }
+  cost_terms_publisher_->publish(ToRosMessage(
+      *trajectory.diagnostics.cost_terms, trajectory.solution_pose_time_ns,
+      node_.get_clock()->now()));
 }
 
 void MppiRosRuntime::QueueVisualization(
@@ -211,6 +254,7 @@ void MppiRosRuntime::VisualizationWorker() {
   while (true) {
     std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>> work;
     std::optional<std::pair<std::shared_ptr<const ObstacleField>, rclcpp::Time>> obstacle_work;
+    std::shared_ptr<const PlannedTrajectory> cost_terms_work;
     bool publish_static = false;
     {
       std::unique_lock<std::mutex> lock(visualization_mutex_);
@@ -218,7 +262,8 @@ void MppiRosRuntime::VisualizationWorker() {
         std::chrono::steady_clock::time_point::max();
       visualization_cv_.wait_until(lock, wake_time, [this]() {
         return stop_visualization_ || pending_visualization_.has_value() ||
-               pending_obstacle_visualization_.has_value();
+               pending_obstacle_visualization_.has_value() ||
+               pending_cost_terms_ != nullptr;
       });
       if (stop_visualization_) {
         return;
@@ -230,6 +275,10 @@ void MppiRosRuntime::VisualizationWorker() {
       if (pending_obstacle_visualization_) {
         obstacle_work = std::move(pending_obstacle_visualization_);
         pending_obstacle_visualization_.reset();
+      }
+      if (pending_cost_terms_) {
+        cost_terms_work = std::move(pending_cost_terms_);
+        pending_cost_terms_.reset();
       }
       const auto now = std::chrono::steady_clock::now();
       if (visualization_.enabled && now >= next_static_publication) {
@@ -262,6 +311,15 @@ void MppiRosRuntime::VisualizationWorker() {
         RCLCPP_ERROR_THROTTLE(
           node_.get_logger(), *node_.get_clock(), 1000,
           "MPPI obstacle costmap publication failed: %s", error.what());
+      }
+    }
+    if (cost_terms_work) {
+      try {
+        PublishCostTerms(*cost_terms_work);
+      } catch (const std::exception & error) {
+        RCLCPP_ERROR_THROTTLE(
+          node_.get_logger(), *node_.get_clock(), 1000,
+          "MPPI cost term publication failed: %s", error.what());
       }
     }
   }
@@ -348,6 +406,7 @@ void MppiRosRuntime::Reset() {
     std::lock_guard<std::mutex> visualization_lock(visualization_mutex_);
     pending_visualization_.reset();
     pending_obstacle_visualization_.reset();
+    pending_cost_terms_.reset();
     next_costmap_time_ = std::chrono::steady_clock::now();
   }
   worker_cv_.notify_all();
@@ -374,8 +433,18 @@ void MppiRosRuntime::SolveOnce(
     }
     capture_visualization = visualization_.enabled &&
       std::chrono::steady_clock::now() >= next_visualization_time_;
+    const bool capture_cost_terms = cost_terms_.enabled &&
+      std::chrono::steady_clock::now() >= next_cost_terms_time_;
     trajectory = controller_->PlanLatest(
-      capture_visualization ? controller_->config().num_rollouts : 0U);
+      capture_visualization ? controller_->config().num_rollouts : 0U,
+      capture_cost_terms);
+    if (capture_cost_terms) {
+      next_cost_terms_time_ += cost_terms_period_;
+      const auto now = std::chrono::steady_clock::now();
+      if (next_cost_terms_time_ <= now) {
+        next_cost_terms_time_ = now + cost_terms_period_;
+      }
+    }
     if (capture_visualization) {
       next_visualization_time_ += visualization_period_;
       const auto now = std::chrono::steady_clock::now();
@@ -409,6 +478,13 @@ void MppiRosRuntime::SolveOnce(
     control_work_pending_ = true;
   }
   control_cv_.notify_one();
+  if (solution->diagnostics.cost_terms) {
+    {
+      std::lock_guard<std::mutex> lock(visualization_mutex_);
+      pending_cost_terms_ = solution;
+    }
+    visualization_cv_.notify_one();
+  }
   if (capture_visualization) {
     QueueVisualization(std::move(solution), node_.get_clock()->now());
   }

@@ -66,11 +66,14 @@ class MppiController {
   // Call for every incoming state message, even if optimization is throttled
   // to solve_rate_hz. This keeps the loop-continuous s hint current.
   [[nodiscard]] Projection UpdateObservation(const VehicleObservation & observation);
+  // capture_cost_terms fills diagnostics.cost_terms with the per-term
+  // decomposition of the returned trajectory's cost. Request it well below the
+  // solve rate; it is debug output, not part of the control path.
   [[nodiscard]] PlannedTrajectory PlanLatest(
-    std::uint32_t num_visualization_rollouts = 0U);
+    std::uint32_t num_visualization_rollouts = 0U, bool capture_cost_terms = false);
   [[nodiscard]] PlannedTrajectory Plan(
     const VehicleObservation & observation,
-    std::uint32_t num_visualization_rollouts = 0U);
+    std::uint32_t num_visualization_rollouts = 0U, bool capture_cost_terms = false);
   // Called only after the ROS command publisher accepts a solution. This keeps
   // the fallback feedback aligned with what left the controller, not merely
   // with the newest (possibly downsampled) solve.

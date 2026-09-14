@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -225,6 +226,77 @@ struct ReferenceHorizon {
   std::vector<float> e_max;           // T + 1
 };
 
+// Per-term decomposition of the scalar cost the solver minimizes. The entries
+// sum exactly to the cost of the trajectory they were measured on, so a debug
+// consumer can see which term is driving a solve instead of only its sum.
+// progress is negative because it rewards arc length travelled.
+enum CostTermIndex : std::size_t {
+  kTermReferenceTracking = 0,
+  kTermVelocityProfile,
+  kTermBoundary,
+  kTermCrash,
+  kTermSideslip,
+  kTermSideslipKill,
+  kTermObstacleDistance,
+  kTermObstacleLatching,
+  kTermLateralDamping,
+  kTermWheelSlip,
+  kTermControlEffort,
+  kTermControlSmoothness,
+  kTermControlRate,
+  kTermImportanceSampling,
+  kTermLongitudinalAcceleration,
+  kTermLongitudinalDeceleration,
+  kTermProgress,
+  kCostTermCount,
+};
+
+// Value of the first_*_step fields when that latch never fired over the horizon.
+constexpr std::uint16_t kNoCostLatch = 0xFFFFU;
+
+struct CostTerms {
+  float values[kCostTermCount]{};
+  // Detail splits. Each array sums to its grouped entry in values, so adding
+  // them to a total would double count.
+  float reference_tracking[kStateDim]{};
+  float control_effort[kControlDim]{};
+  float control_smoothness[kControlDim]{};
+  float control_rate[kControlDim]{};
+  // Horizon step at which each latched penalty first fired, kNoCostLatch if it
+  // never did. crash and sideslip_kill carry weights three orders of magnitude
+  // above the shaping terms, so once one latches it swamps the decomposition
+  // and only the step it fired at is informative.
+  std::uint16_t first_crash_step{kNoCostLatch};
+  std::uint16_t first_sideslip_step{kNoCostLatch};
+  std::uint16_t first_obstacle_step{kNoCostLatch};
+  // Smallest signed footprint clearance seen over the horizon. Equals the
+  // obstacle field's maximum distance when obstacles are disabled or absent.
+  float minimum_clearance_m{};
+
+#if defined(__CUDACC__)
+  __host__ __device__
+#endif
+  float total() const noexcept {
+    float sum = 0.0F;
+    for (std::size_t i = 0; i < kCostTermCount; ++i) {
+      sum += values[i];
+    }
+    return sum;
+  }
+};
+
+// Parallel to CostTermIndex; used for the terminal summary and message field
+// documentation. Host only.
+inline const char * CostTermName(const std::size_t index) noexcept {
+  constexpr const char * kNames[kCostTermCount] = {
+    "reference_tracking", "velocity_profile", "boundary", "crash", "sideslip",
+    "sideslip_kill", "obstacle_distance", "obstacle_latching", "lateral_damping",
+    "wheel_slip", "control_effort", "control_smoothness", "control_rate",
+    "importance_sampling", "longitudinal_acceleration", "longitudinal_deceleration",
+    "progress"};
+  return index < kCostTermCount ? kNames[index] : "unknown";
+}
+
 struct MppiDiagnostics {
   float minimum_cost{std::numeric_limits<float>::infinity()};
   float effective_sample_size{};
@@ -232,6 +304,9 @@ struct MppiDiagnostics {
   std::array<float, kControlDim> sigma_used{};
   float solve_time_ms{};
   std::uint32_t finite_rollouts{};
+  // Present only on solves the ROS runtime asked to decompose, which it does at
+  // its own reduced rate. Measured on the published (expected) trajectory.
+  std::optional<CostTerms> cost_terms{};
 };
 
 struct WeightedRollout {

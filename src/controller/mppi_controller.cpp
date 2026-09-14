@@ -77,7 +77,7 @@ Projection MppiController::UpdateObservation(const VehicleObservation & observat
 }
 
 PlannedTrajectory MppiController::PlanLatest(
-  const std::uint32_t num_visualization_rollouts)
+  const std::uint32_t num_visualization_rollouts, const bool capture_cost_terms)
 {
   if (!latest_) {
     throw std::runtime_error("no vehicle observation is available for planning");
@@ -112,7 +112,7 @@ PlannedTrajectory MppiController::PlanLatest(
     projection.s_m, config_.mppi.horizon, config_.mppi.dt_s);
   auto solution = optimizer_.Solve(
     initial, reference, previous_control, projection.s_m, shift_fraction, reset,
-    num_visualization_rollouts);
+    num_visualization_rollouts, capture_cost_terms);
 
   PlannedTrajectory result;
   result.solution_pose_time_ns = observation.pose_time_ns;
@@ -141,10 +141,10 @@ void MppiController::RecordPublishedControl(const Control & control) noexcept {
 
 PlannedTrajectory MppiController::Plan(
   const VehicleObservation & observation,
-  const std::uint32_t num_visualization_rollouts)
+  const std::uint32_t num_visualization_rollouts, const bool capture_cost_terms)
 {
   (void)UpdateObservation(observation);
-  return PlanLatest(num_visualization_rollouts);
+  return PlanLatest(num_visualization_rollouts, capture_cost_terms);
 }
 
 void MppiController::Reset() noexcept {

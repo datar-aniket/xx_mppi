@@ -40,6 +40,8 @@ def _launch_node(context):
             "track_right_boundary_topic"
         ),
         "obstacle_costmap_topic": LaunchConfiguration("obstacle_costmap_topic"),
+        "publish_cost_terms": LaunchConfiguration("publish_cost_terms"),
+        "cost_terms_topic": LaunchConfiguration("cost_terms_topic"),
     }
 
     # Empty launch arguments leave these values to config/mppi.yaml. A supplied
@@ -123,6 +125,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "obstacle_costmap_topic", default_value="xx_mppi/obstacle_costmap"
+        ),
+        DeclareLaunchArgument("publish_cost_terms", default_value="false"),
+        DeclareLaunchArgument(
+            "cost_terms_topic", default_value="xx_mppi/cost_terms"
         ),
     ]
     return LaunchDescription(arguments + [OpaqueFunction(function=_launch_node)])

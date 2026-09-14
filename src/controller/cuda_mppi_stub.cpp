@@ -28,7 +28,7 @@ CudaMppiController & CudaMppiController::operator=(CudaMppiController &&) noexce
 
 MppiSolution CudaMppiController::Solve(
   const State &, const ReferenceHorizon &, const Control &, float, float, bool,
-  std::uint32_t)
+  std::uint32_t, bool)
 {
   return impl_->Solve();
 }

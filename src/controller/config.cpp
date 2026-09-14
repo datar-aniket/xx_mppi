@@ -182,6 +182,8 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     mppi_yaml, "info_log_rate_hz", config.info_log_rate_hz);
   config.visualization_rate_hz = GetOr(
     mppi_yaml, "visualization_rate_hz", config.visualization_rate_hz);
+  config.cost_terms_rate_hz = GetOr(
+    mppi_yaml, "cost_terms_rate_hz", config.cost_terms_rate_hz);
   config.num_rollouts = GetOr(mppi_yaml, "num_rollouts", config.num_rollouts);
 
   config.obstacles.enabled = GetOr(obstacle_yaml, "enabled", config.obstacles.enabled);
@@ -371,6 +373,8 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     !std::isfinite(config.info_log_rate_hz) ||
     !(config.visualization_rate_hz > 0.0F) ||
     !std::isfinite(config.visualization_rate_hz) ||
+    !(config.cost_terms_rate_hz > 0.0F) ||
+    !std::isfinite(config.cost_terms_rate_hz) ||
     config.num_rollouts == 0U || config.num_rollouts > config.mppi.num_samples ||
     !(config.projection_window_m > 0.0F) || !std::isfinite(config.projection_window_m) ||
     !(config.maximum_model_sideslip_rad > 0.0F) ||
