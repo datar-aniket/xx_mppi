@@ -343,12 +343,25 @@ TEST(DirectControlMessage, TorqueModePassesWheelTorqueWithoutMappingOrClamp) {
   trajectory.controls = {Control{{0.1F, 2.75F}}};
   DirectControlConfig config;
   config.mode = DirectControlMode::kTorque;
+  config.four_wheel = true;
   config.torque_to_throttle_scale = 100.0F;
   config.throttle_min = -0.1F;
   config.throttle_max = 0.1F;
 
-  const auto message = ToDirectControlMessage(trajectory, config);
-  EXPECT_NEAR(message.linear.x, 2.75, 1.0e-6);
+  const auto message = ToDirectControlMessage(trajectory, config, rclcpp::Time(0, 0));
+  EXPECT_NEAR(message.throttle, 2.75F, 1.0e-6F);
+  EXPECT_EQ(message.throttle_type, xxcar_msgs::msg::DirectControl::THROTTLE_TORQUE);
+}
+
+// A Twist cannot mark its throttle as a torque, so the driver would apply N m
+// as amps. Torque mode is only valid on the DirectControl transport.
+TEST(DirectControlMessage, TorqueModeRequiresDirectControlTransport) {
+  DirectControlConfig config;
+  config.mode = DirectControlMode::kTorque;
+  config.four_wheel = false;
+  EXPECT_THROW(ValidateDirectControlConfig(config), std::invalid_argument);
+  config.four_wheel = true;
+  EXPECT_NO_THROW(ValidateDirectControlConfig(config));
 }
 
 TEST(DirectControlMessage, AppliesSteeringSignAndLimit) {
@@ -368,6 +381,24 @@ TEST(DirectControlMessage, AppliesSteeringSignAndLimit) {
   DirectControlConfig invalid;
   invalid.steering_scale = 0.0F;
   EXPECT_THROW(ValidateDirectControlConfig(invalid), std::invalid_argument);
+}
+
+// The four-wheel transport sends both axles in radians so the driver can map
+// each through its own servo calibration. A non-unit scale would push the front
+// servo's sign and gain onto the rear, which may be mirrored.
+TEST(DirectControlMessage, FourWheelTransportCarriesRadiansForBothAxles) {
+  PlannedTrajectory trajectory;
+  trajectory.controls = {Control{{0.25F, 0.0F, -0.1F}}};
+  DirectControlConfig config;
+  config.four_wheel = true;
+  const auto message = ToDirectControlMessage(trajectory, config, rclcpp::Time(0, 0));
+  EXPECT_NEAR(message.steering_angle_rad, 0.25F, 1.0e-6F);
+  EXPECT_NEAR(message.rear_steering_angle_rad, -0.1F, 1.0e-6F);
+
+  config.steering_scale = -4.5F;
+  EXPECT_THROW(ValidateDirectControlConfig(config), std::invalid_argument);
+  config.four_wheel = false;
+  EXPECT_NO_THROW(ValidateDirectControlConfig(config));
 }
 
 TEST(DirectControlMessage, RejectsUnknownControlMode) {

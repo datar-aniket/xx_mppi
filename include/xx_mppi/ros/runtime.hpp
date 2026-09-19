@@ -72,6 +72,7 @@ class MppiRosRuntime {
   DirectControlConfig direct_control_;
   rclcpp::Publisher<xxcar_msgs::msg::VehicleControlTrajectory>::SharedPtr trajectory_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr direct_control_publisher_;
+  rclcpp::Publisher<xxcar_msgs::msg::DirectControl>::SharedPtr four_wheel_control_publisher_;
   VisualizationConfig visualization_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr planned_path_publisher_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;

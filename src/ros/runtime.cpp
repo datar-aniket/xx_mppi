@@ -30,10 +30,39 @@ MppiRosRuntime::MppiRosRuntime(
     node_.get_logger(), "Loaded raceline '%s' (%zu points, %.3f m lap)",
     controller_->config().raceline_path.c_str(), controller_->raceline().points().size(),
     static_cast<double>(controller_->raceline().length()));
+  // Config load pins the rear steering channel whenever the active model does
+  // not steer the rear axle. Say so at startup, so a run that shows no rear
+  // motion has an explanation that does not require reading the YAML.
+  if (controller_->config().mppi.sigma[kRearSteering] > 0.0F) {
+    RCLCPP_INFO(
+      node_.get_logger(), "MPPI rear steering ACTIVE: sigma %.3f rad, bounds [%.3f, %.3f]",
+      static_cast<double>(controller_->config().mppi.sigma[kRearSteering]),
+      static_cast<double>(controller_->config().mppi.control_min[kRearSteering]),
+      static_cast<double>(controller_->config().mppi.control_max[kRearSteering]));
+  } else {
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "MPPI rear steering pinned to zero; the solver plans front steering only");
+  }
   if (direct_control_.enabled) {
     ValidateDirectControlConfig(direct_control_);
-    direct_control_publisher_ = node_.create_publisher<geometry_msgs::msg::Twist>(
-      direct_control_.topic, rclcpp::QoS(1).best_effort());
+    // Exactly one transport is ever created: a Twist, or the four-wheel
+    // DirectControl message. Publishing both would give the driver two command
+    // streams for the same actuator.
+    if (direct_control_.four_wheel) {
+      if (direct_control_.four_wheel_topic.empty()) {
+        throw std::invalid_argument("four wheel direct control topic must not be empty");
+      }
+      four_wheel_control_publisher_ =
+        node_.create_publisher<xxcar_msgs::msg::DirectControl>(
+        direct_control_.four_wheel_topic, rclcpp::QoS(1).best_effort());
+      RCLCPP_INFO(
+        node_.get_logger(), "MPPI four-wheel direct control on '%s'",
+        direct_control_.four_wheel_topic.c_str());
+    } else {
+      direct_control_publisher_ = node_.create_publisher<geometry_msgs::msg::Twist>(
+        direct_control_.topic, rclcpp::QoS(1).best_effort());
+    }
   } else {
     if (trajectory_topic.empty()) {
       throw std::invalid_argument("trajectory topic must not be empty");
@@ -631,7 +660,10 @@ void MppiRosRuntime::ControlPublicationCallback() {
   }
 
   try {
-    if (direct_control_.enabled) {
+    if (direct_control_.four_wheel && direct_control_.enabled) {
+      four_wheel_control_publisher_->publish(
+        ToDirectControlMessage(*solution, direct_control_, publication_time));
+    } else if (direct_control_.enabled) {
       direct_control_publisher_->publish(ToDirectControlMessage(*solution, direct_control_));
     } else {
       trajectory_publisher_->publish(ToRosMessage(*solution, publication_time));
