@@ -226,16 +226,22 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   const auto sigma = mppi_yaml["sigma"];
   config.mppi.sigma[kSteering] = GetOr(sigma, "steering_angle_rad", config.mppi.sigma[kSteering]);
   config.mppi.sigma[kWheelTorque] = GetOr(sigma, "wheel_torque_nm", config.mppi.sigma[kWheelTorque]);
+  config.mppi.sigma[kRearSteering] = GetOr(
+    sigma, "rear_steering_angle_rad", config.mppi.sigma[kRearSteering]);
   const auto bounds = mppi_yaml["control_bounds"];
   if (bounds) {
     config.mppi.control_min[kSteering] = GetOr(
       bounds["min"], "steering_angle_rad", config.mppi.control_min[kSteering]);
     config.mppi.control_min[kWheelTorque] = GetOr(
       bounds["min"], "wheel_torque_nm", config.mppi.control_min[kWheelTorque]);
+    config.mppi.control_min[kRearSteering] = GetOr(
+      bounds["min"], "rear_steering_angle_rad", config.mppi.control_min[kRearSteering]);
     config.mppi.control_max[kSteering] = GetOr(
       bounds["max"], "steering_angle_rad", config.mppi.control_max[kSteering]);
     config.mppi.control_max[kWheelTorque] = GetOr(
       bounds["max"], "wheel_torque_nm", config.mppi.control_max[kWheelTorque]);
+    config.mppi.control_max[kRearSteering] = GetOr(
+      bounds["max"], "rear_steering_angle_rad", config.mppi.control_max[kRearSteering]);
   }
   const auto adaptation = mppi_yaml["adaptation"];
   config.mppi.adaptation.adaptive_lambda = GetOr(
@@ -293,6 +299,8 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     config.model_kind = ModelKind::kKinematicBicycle;
   } else if (model == "dynamic_bicycle_fiala") {
     config.model_kind = ModelKind::kDynamicBicycleFiala;
+  } else if (model == "dynamic_bicycle_fiala_4ws") {
+    config.model_kind = ModelKind::kDynamicBicycleFiala4ws;
   } else if (model == "tensorrt_neural_derivative") {
     config.model_kind = ModelKind::kTensorRtNeuralDerivative;
   } else {
@@ -344,11 +352,15 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     effort, "steering_angle_rad", config.costs.control_effort[kSteering]);
   config.costs.control_effort[kWheelTorque] = GetOr(
     effort, "wheel_torque_nm", config.costs.control_effort[kWheelTorque]);
+  config.costs.control_effort[kRearSteering] = GetOr(
+    effort, "rear_steering_angle_rad", config.costs.control_effort[kRearSteering]);
   const auto smoothness = weights_yaml["control_smoothness"];
   config.costs.control_smoothness[kSteering] = GetOr(
     smoothness, "steering_angle_rad", config.costs.control_smoothness[kSteering]);
   config.costs.control_smoothness[kWheelTorque] = GetOr(
     smoothness, "wheel_torque_nm", config.costs.control_smoothness[kWheelTorque]);
+  config.costs.control_smoothness[kRearSteering] = GetOr(
+    smoothness, "rear_steering_angle_rad", config.costs.control_smoothness[kRearSteering]);
   const auto acceleration = weights_yaml["longitudinal_acceleration"];
   config.costs.longitudinal_acceleration = GetOr(
     acceleration, "acceleration_weight", config.costs.longitudinal_acceleration);
@@ -359,6 +371,24 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     control_rate, "steering_velocity_radps", config.costs.control_rate[kSteering]);
   config.costs.control_rate[kWheelTorque] = GetOr(
     control_rate, "wheel_torque_rate_nmps", config.costs.control_rate[kWheelTorque]);
+  config.costs.control_rate[kRearSteering] = GetOr(
+    control_rate, "rear_steering_velocity_radps", config.costs.control_rate[kRearSteering]);
+
+  // A front-steer-only model never reads the rear channel, so sampling it would
+  // spend part of every solve exploring a control that cannot move the
+  // trajectory. Pinning is zero sigma with zero-width bounds, which forces each
+  // candidate to exactly zero in BuildCandidates. The ROS runtime reports this
+  // at startup; this loader has no logger of its own.
+  //
+  // tensorrt_neural_derivative is pinned by this rule too. Its exported engine
+  // takes a fixed six-wide input — four body states plus front steering and
+  // wheel torque — with no slot for a rear angle, so it cannot steer the rear
+  // axle until the network is retrained and re-exported.
+  if (!ModelSteersRearAxle(config.model_kind)) {
+    config.mppi.sigma[kRearSteering] = 0.0F;
+    config.mppi.control_min[kRearSteering] = 0.0F;
+    config.mppi.control_max[kRearSteering] = 0.0F;
+  }
 
   if (config.mppi.num_samples <= 3U || config.mppi.horizon == 0U ||
     config.mppi.horizon == std::numeric_limits<std::uint16_t>::max() ||
@@ -389,10 +419,19 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     if (!std::isfinite(config.mppi.control_min[i]) ||
       !std::isfinite(config.mppi.control_max[i]) ||
       !std::isfinite(config.mppi.sigma[i]) ||
-      !(config.mppi.control_min[i] < config.mppi.control_max[i]) ||
-      !(config.mppi.sigma[i] > 0.0F) ||
       !std::isfinite(config.costs.control_rate[i]) || config.costs.control_rate[i] < 0.0F)
     {
+      throw std::runtime_error("invalid control bounds or sampling sigma");
+    }
+    // A channel is either active (samples within a real interval) or pinned
+    // (never sampled, clamped to exactly zero). Half-pinned states — zero sigma
+    // with open bounds, or a collapsed interval still being sampled — are
+    // configuration mistakes that would otherwise run and quietly do nothing.
+    const bool active = config.mppi.sigma[i] > 0.0F &&
+      config.mppi.control_min[i] < config.mppi.control_max[i];
+    const bool pinned = config.mppi.sigma[i] == 0.0F &&
+      config.mppi.control_min[i] == 0.0F && config.mppi.control_max[i] == 0.0F;
+    if (!active && !pinned) {
       throw std::runtime_error("invalid control bounds or sampling sigma");
     }
   }

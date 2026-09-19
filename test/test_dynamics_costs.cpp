@@ -162,6 +162,72 @@ TEST(Dynamics, FialaUsesPositiveFloorAtZeroSpeed) {
     model.Derivative(stopped, control)[kYawRate]);
 }
 
+// The 4WS model is an independent copy of the Fiala physics, not a wrapper
+// around it, so that a mistake in the rear-steer terms cannot reach a
+// front-steer-only run. This test is what keeps the two copies honest: with the
+// rear angle at zero every rear term must collapse to the front-steer-only
+// form, exactly, with no small-angle approximation.
+TEST(Dynamics, ZeroRearSteerReproducesTheFrontSteerOnlyModel) {
+  const auto parameters = TestVehicle();
+  const DynamicBicycleFiala front_only(parameters);
+  const DynamicBicycleFiala4ws four_wheel(parameters);
+
+  const BodyState states[] = {
+    BodyState{{0.0F, 3.0F, 0.0F, 3.0F}},
+    BodyState{{0.4F, 6.0F, 0.08F, 6.4F}},
+    BodyState{{-0.7F, 2.0F, -0.15F, 1.6F}},
+    BodyState{{0.0F, 0.0F, 0.0F, 0.0F}},
+    BodyState{{0.2F, -1.5F, 0.05F, -1.2F}},
+  };
+  const Control controls[] = {
+    Control{{0.0F, 0.0F, 0.0F}},
+    Control{{0.25F, 1.0F, 0.0F}},
+    Control{{-0.30F, -1.0F, 0.0F}},
+  };
+  for (const auto & state : states) {
+    for (const auto & control : controls) {
+      ExpectDerivativeNear(
+        four_wheel.Derivative(state, control),
+        front_only.Derivative(state, control));
+    }
+  }
+}
+
+// Opposite-phase rear steer (rear opposite the front) turns the car harder for
+// the same front angle, which is the low-speed agility case for 4WS. Same-phase
+// rear steer crabs the car instead, reducing the yaw it develops.
+TEST(Dynamics, RearSteerPhaseSetsYawAuthority) {
+  const DynamicBicycleFiala4ws model(TestVehicle());
+  const BodyState cruising{{0.0F, 4.0F, 0.0F, 4.0F}};
+  constexpr float front = 0.20F;
+
+  const float neutral = model.Derivative(
+    cruising, Control{{front, 0.0F, 0.0F}})[kYawRate];
+  const float opposite = model.Derivative(
+    cruising, Control{{front, 0.0F, -0.10F}})[kYawRate];
+  const float same = model.Derivative(
+    cruising, Control{{front, 0.0F, 0.10F}})[kYawRate];
+
+  EXPECT_GT(neutral, 0.0F);
+  EXPECT_GT(opposite, neutral);
+  EXPECT_LT(same, neutral);
+}
+
+// With the front straight, rear steer alone must still develop a yaw moment,
+// and it must point the opposite way a front input of the same sign would.
+TEST(Dynamics, RearSteerAloneYawsOppositeTheFrontAxle) {
+  const DynamicBicycleFiala4ws model(TestVehicle());
+  const BodyState cruising{{0.0F, 4.0F, 0.0F, 4.0F}};
+
+  const float from_front = model.Derivative(
+    cruising, Control{{0.15F, 0.0F, 0.0F}})[kYawRate];
+  const float from_rear = model.Derivative(
+    cruising, Control{{0.0F, 0.0F, 0.15F}})[kYawRate];
+
+  EXPECT_GT(from_front, 0.0F);
+  EXPECT_LT(from_rear, 0.0F);
+}
+
 TEST(Costs, CrashedRolloutCostsMoreThanInBoundsRollout) {
   const auto raceline = Raceline::LoadCsv(TestCsv());
   const auto reference = raceline.Sample(0.0F, 5U, 0.1F);

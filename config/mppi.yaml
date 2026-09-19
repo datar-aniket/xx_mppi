@@ -51,14 +51,21 @@ observation:
   # uses the full measured course heading.
   maximum_model_sideslip_rad: 1.5
 
+# Rear steering ships PINNED: zero sigma with zero-width bounds forces every
+# candidate rear angle to exactly zero, so the solver plans front-steer-only
+# trajectories. Keep it pinned until the rear servo is calibrated and
+# bench-tested; docs/four_wheel_steering.md lists the steps to enable 4WS.
+# Config load pins this channel anyway whenever the selected model does not
+# steer the rear axle.
 sigma:
   steering_angle_rad: 0.15
   wheel_torque_nm: 0.3
+  rear_steering_angle_rad: 0.0
 
 # Provisional torque bounds pending final vehicle characterization.
 control_bounds:
-  min: {steering_angle_rad: -0.4, wheel_torque_nm: -1.0}
-  max: {steering_angle_rad:  0.4, wheel_torque_nm: 0.8}
+  min: {steering_angle_rad: -0.4, wheel_torque_nm: -1.0, rear_steering_angle_rad: 0.0}
+  max: {steering_angle_rad:  0.4, wheel_torque_nm: 0.8, rear_steering_angle_rad: 0.0}
 
 noise_smoothing_window: 7
 control_delay_steps: 0

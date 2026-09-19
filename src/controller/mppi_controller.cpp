@@ -44,7 +44,10 @@ Control MppiController::PreviousControl(const VehicleObservation & observation) 
   if (!config_.use_measured_control_feedback) {
     return last_applied_control_;
   }
-  return Control{{observation.measured_steering_rad, observation.measured_torque_nm}};
+  // No rear steering measurement exists: EkfState carries a single steering
+  // angle. The rear channel falls back to zero, which is exact while it is
+  // pinned and an approximation once it is not.
+  return Control{{observation.measured_steering_rad, observation.measured_torque_nm, 0.0F}};
 }
 
 Projection MppiController::UpdateObservation(const VehicleObservation & observation) {
@@ -134,9 +137,12 @@ PlannedTrajectory MppiController::PlanLatest(
 }
 
 void MppiController::RecordPublishedControl(const Control & control) noexcept {
-  if (std::isfinite(control[kSteering]) && std::isfinite(control[kWheelTorque])) {
-    last_applied_control_ = control;
+  for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+    if (!std::isfinite(control[channel])) {
+      return;
+    }
   }
+  last_applied_control_ = control;
 }
 
 PlannedTrajectory MppiController::Plan(

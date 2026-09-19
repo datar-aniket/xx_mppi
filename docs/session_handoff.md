@@ -74,7 +74,9 @@ The internal float32 Frenet state ordering is:
 6. relative course heading `dphi` `[rad]`;
 7. continuous path evolution `s` `[m]`.
 
-Controls are `[steering_angle_rad, wheel_torque_nm]`.
+Controls are `[steering_angle_rad, wheel_torque_nm, rear_steering_angle_rad]`.
+The rear channel is pinned to zero unless the model is `dynamic_bicycle_fiala_4ws`;
+see `four_wheel_steering.md`.
 
 ROS poses use ENU coordinates and standard yaw. The EPIC CSV heading convention
 is converted with `phi = yaw_enu - pi/2`. Each accepted vehicle pose is
