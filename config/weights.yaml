@@ -5,10 +5,10 @@ reference_tracking:
   driven_wheel_speed: 0.0
   lateral_deviation: 500.0
   relative_heading: 1.0
-  path_evolution: 0.0
+  path_evolution: 20.0
 
 velocity_profile: 
-  weight: 50.0
+  weight: 20.0
   over_weight: 0.05
 
 progress: 
@@ -16,10 +16,10 @@ progress:
 
 boundary: 
   weight: 200.0
-  margin: 0.3
+  margin: 0.2
 
 crash: 
-  weight: 600000.0
+  weight: 60000.0
   # weight: 600.0
   discount: 0.9
   buffer: 0.18
@@ -35,7 +35,7 @@ lateral_damping:
 
 wheel_slip: 
   weight: 500.0
-  band: 0.2
+  band: 1.2
 
 # Rear steering mirrors the front steering weights. These are inert while the
 # rear channel is pinned in mppi.yaml, but they must be non-zero before it is
@@ -53,12 +53,12 @@ control_smoothness:
 # Penalize predicted longitudinal acceleration asymmetrically. Values are
 # derived from consecutive speed states with the configured MPPI dt.
 longitudinal_acceleration:
-  acceleration_weight: 10.0
+  acceleration_weight: 0.1
   deceleration_weight: 0.000
 
 # Physical command-rate penalties, including the transition from measured EKF
 # actuator feedback to the first candidate command.
 control_rate:
-  steering_velocity_radps: 0.20
-  wheel_torque_rate_nmps: 0.1
-  rear_steering_velocity_radps: 0.20
+  steering_velocity_radps: 5.20
+  wheel_torque_rate_nmps: 30.0
+  rear_steering_velocity_radps: 0.0

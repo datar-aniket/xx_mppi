@@ -1,10 +1,10 @@
 # Jetson Orin NX target. K/T/dt are compile-independent runtime dimensions;
 # changing them reallocates persistent CUDA buffers but does not alter messages.
 num_samples: 4001
-horizon: 60
+horizon: 40
 dt: 0.1
-solve_rate_hz: 180.0
-control_publish_rate_hz: 180.0  # publish only the newest completed solution
+solve_rate_hz: 100.0
+control_publish_rate_hz: 50.0  # publish only the newest completed solution
 maximum_solution_age_s: 0.4    # zero disables the stale-command guard
 info_log_rate_hz: 10.0          # terminal ROS info summary of latest command
 visualization_rate_hz: 20.0  # reduced-rate RViz publishing and rollout snapshots
@@ -36,11 +36,11 @@ direct_control_topic: direct_control
 # xxCAR_bringup/calibration/wheel_torque_calibration.yaml (gear ratio, K_t and
 # on-ground loss current) and clamps it. Requires direct_control_four_wheel.
 # duty_cycle: scale/clamp the torque below into a raw throttle instead.
-control_mode: torque
+control_mode: duty_cycle
 # Used only by control_mode duty_cycle.
-direct_control_torque_to_throttle_scale: 50.0
-direct_control_throttle_min: -50.0
-direct_control_throttle_max: 50.0
+direct_control_torque_to_throttle_scale: 0.4
+direct_control_throttle_min: -1.0
+direct_control_throttle_max: 1.0
 # MPPI steering is positive-left. Set -1.0 when the actuator chain downstream of
 # cmd_vel is positive-right (PID_lanekeeping compensates with invert_steering).
 direct_control_steering_scale: 1.0
@@ -69,8 +69,8 @@ sigma:
 
 # Provisional torque bounds pending final vehicle characterization.
 control_bounds:
-  min: {steering_angle_rad: -0.4, wheel_torque_nm: -1.0, rear_steering_angle_rad: 0.0}
-  max: {steering_angle_rad:  0.4, wheel_torque_nm: 0.8, rear_steering_angle_rad: 0.0}
+  min: {steering_angle_rad: -0.52, wheel_torque_nm: -1.0, rear_steering_angle_rad: 0.0}
+  max: {steering_angle_rad:  0.52, wheel_torque_nm: 1.0, rear_steering_angle_rad: 0.0}
 
 noise_smoothing_window: 7
 control_delay_steps: 0
@@ -99,7 +99,7 @@ adaptation:
 # final residual or the existing safety checks fail, the unrefined MPPI result
 # remains the command and warm start.
 mpc_refinement:
-  enabled: true
+  enabled: false
   sqp_iterations: 3
   pcg_iterations: 48
   pcg_tolerance: 1.0e-4
