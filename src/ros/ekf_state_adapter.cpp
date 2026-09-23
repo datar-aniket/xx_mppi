@@ -105,11 +105,14 @@ VehicleObservation ToVehicleObservation(
   observation.longitudinal_acceleration_mps2 = FiniteFloat(
     message.linear_acceleration.x, "longitudinal acceleration");
   observation.sideslip_rad = sideslip;
-  // EkfState already defines these channels in the physical units consumed by
-  // the model. Keeping this copy unit-preserving prevents double calibration.
-  observation.measured_torque_nm = FiniteFloat(message.wheel_torque_nm, "wheel torque");
+  // ekf_mcu_driver converts the raw VESC channels (wheel_torque_nm is motor
+  // current, motor_speed_ms is tacho counts/s) into these physical fields
+  // through its wheel torque calibration, so they are copied unscaled. They are
+  // NaN when the driver runs without that calibration, which FiniteFloat rejects.
+  observation.measured_torque_nm = FiniteFloat(
+    message.wheel_torque_measured_nm, "measured wheel torque");
   observation.measured_steering_rad = FiniteFloat(message.steering_angle, "steering angle");
-  observation.driven_wheel_speed_mps = FiniteFloat(message.motor_speed_ms, "motor speed");
+  observation.driven_wheel_speed_mps = FiniteFloat(message.wheel_speed_mps, "wheel speed");
   observation.status = static_cast<std::uint32_t>(message.solution_status) |
     (static_cast<std::uint32_t>(message.source_valid) << 8U);
   return observation;

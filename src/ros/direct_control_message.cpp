@@ -43,6 +43,22 @@ void ValidateDirectControlConfig(const DirectControlConfig & config) {
     throw std::invalid_argument(
       "direct control throttle_min must not exceed throttle_max");
   }
+  // Twist carries no throttle type, so the driver reads its throttle as duty or
+  // amps per its own control_throttle_type and a wheel torque in N m would be
+  // applied as that many amps. Only DirectControl can say it is a torque.
+  if (config.mode == DirectControlMode::kTorque && !config.four_wheel) {
+    throw std::invalid_argument(
+      "control_mode torque requires direct_control_four_wheel: only the DirectControl "
+      "transport marks the throttle as a wheel torque for ekf_mcu_driver to convert");
+  }
+  // One steering_scale is applied to both axles, but the servos differ in gain
+  // and possibly sign. The four-wheel transport therefore carries plain radians
+  // and leaves each axle's mapping to its own calibration in ekf_mcu_driver.
+  if (config.four_wheel && config.steering_scale != 1.0F) {
+    throw std::invalid_argument(
+      "direct_control_four_wheel requires direct_control_steering_scale 1.0: both axles "
+      "are sent in radians and ekf_mcu_driver applies each servo's calibration");
+  }
 }
 
 namespace {
@@ -85,8 +101,9 @@ ConvertedControl ConvertFirstControl(
   const float steering_command = std::clamp(
     steering_rad * config.steering_scale,
     -config.steering_limit_rad, config.steering_limit_rad);
-  // The rear angle reuses the front's scale and limit, which assumes the two
-  // servos share a calibration. Revisit when the rear servo is characterized.
+  // The rear shares the front's scale and limit. On the four-wheel transport
+  // the scale is required to be 1.0, so both are radians and the limit is only
+  // a sanity clamp; each servo's mapping lives in the driver's calibration.
   const float rear_steering_command = std::clamp(
     rear_steering_rad * config.steering_scale,
     -config.steering_limit_rad, config.steering_limit_rad);

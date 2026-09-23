@@ -36,8 +36,8 @@ struct DirectControlConfig {
   float steering_limit_rad{0.5F};
   // Publish xxcar_msgs/DirectControl on four_wheel_topic instead of a Twist on
   // topic. Twist cannot carry a rear steering angle, so four-wheel steering
-  // needs this transport; it remains off by default until the rear servo and
-  // four-wheel vehicle model are explicitly configured.
+  // needs this transport. It requires steering_scale 1.0 and ekf_mcu_driver
+  // running with steering calibration, which maps each axle from radians.
   bool four_wheel{false};
   std::string four_wheel_topic{"direct_control"};
 };

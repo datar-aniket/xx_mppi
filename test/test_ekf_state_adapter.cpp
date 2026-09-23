@@ -28,9 +28,12 @@ EkfState ValidMessage() {
   message.angular_velocity.z = 0.2;
   message.linear_acceleration.x = 0.3;
   message.side_slip_rad = 0.1F;
-  message.wheel_torque_nm = 2.0F;
+  // Raw VESC channels (motor amps, tacho counts/s) must not leak through.
+  message.wheel_torque_nm = 31.0F;
   message.steering_angle = 0.4F;
-  message.motor_speed_ms = 5.5F;
+  message.motor_speed_ms = 2028.0F;
+  message.wheel_torque_measured_nm = 2.0F;
+  message.wheel_speed_mps = 5.5F;
   message.solution_status = static_cast<std::uint8_t>(
     EkfState::SOLUTION_STATUS_ATTITUDE_VALID |
     EkfState::SOLUTION_STATUS_YAW_ABSOLUTE |
@@ -140,7 +143,7 @@ TEST(EkfStatePipeline, ProjectsConvertedEnuPoseIntoFrenetFrame) {
   message.twist.linear.x = 1.0;
   message.twist.linear.y = 0.0;
   message.side_slip_rad = 0.0F;
-  message.motor_speed_ms = 1.0F;
+  message.wheel_speed_mps = 1.0F;
 
   ControllerConfig controller_config;
   const auto raceline = Raceline::LoadCsv(
@@ -152,6 +155,17 @@ TEST(EkfStatePipeline, ProjectsConvertedEnuPoseIntoFrenetFrame) {
   EXPECT_NEAR(projection.s_m, 0.0F, 1.0e-5F);
   EXPECT_NEAR(projection.e_m, 0.0F, 1.0e-5F);
   EXPECT_NEAR(projection.relative_course_rad, 0.0F, 1.0e-5F);
+}
+
+TEST(EkfStateAdapter, RejectsUncalibratedDrivetrainFeedback) {
+  auto message = ValidMessage();
+  message.wheel_torque_measured_nm = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(
+    {
+      const auto observation = ToVehicleObservation(message);
+      static_cast<void>(observation);
+    },
+    std::invalid_argument);
 }
 
 }  // namespace
