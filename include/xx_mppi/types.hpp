@@ -13,7 +13,7 @@ namespace xxcar::mppi {
 constexpr std::size_t kBodyStateDim = 4;
 constexpr std::size_t kFrameStateDim = 3;
 constexpr std::size_t kStateDim = kBodyStateDim + kFrameStateDim;
-constexpr std::size_t kControlDim = 2;
+constexpr std::size_t kControlDim = 3;
 
 enum BodyIndex : std::size_t {
   kYawRate = 0,
@@ -48,9 +48,13 @@ enum class FrameKind : std::uint8_t {
   kCartesian = 1,
 };
 
+// kRearSteering is only actuated by models that read it; front-steer-only
+// models ignore it and config load pins its sigma and bounds to zero so the
+// solver does not spend samples on a control that cannot move the trajectory.
 enum ControlIndex : std::size_t {
   kSteering = 0,
   kWheelTorque = 1,
+  kRearSteering = 2,
 };
 
 template<std::size_t Size>
@@ -115,9 +119,12 @@ struct MppiConfig {
   float dt_s{0.1F};
   std::uint16_t integration_substeps{2};
   float lambda{2.0F};
-  std::array<float, kControlDim> sigma{0.10F, 1.0F};
-  std::array<float, kControlDim> control_min{-0.5F, -5.0F};
-  std::array<float, kControlDim> control_max{0.5F, 5.0F};
+  // The rear steering channel defaults to pinned: zero sigma with zero-width
+  // bounds forces every candidate to exactly zero, so a config that never
+  // mentions rear steering behaves precisely like the front-steer-only stack.
+  std::array<float, kControlDim> sigma{0.10F, 1.0F, 0.0F};
+  std::array<float, kControlDim> control_min{-0.5F, -5.0F, 0.0F};
+  std::array<float, kControlDim> control_max{0.5F, 5.0F, 0.0F};
   std::uint16_t noise_smoothing_window{5};
   std::uint16_t control_delay_steps{0};
   float control_cost_gamma{0.8F};
@@ -131,8 +138,10 @@ struct MppiConfig {
 
 struct CostWeights {
   std::array<float, kStateDim> reference_tracking{};
-  std::array<float, kControlDim> control_effort{1.0e-3F, 1.0e-4F};
-  std::array<float, kControlDim> control_smoothness{1.0e4F, 1.0e-1F};
+  // Rear steering mirrors the front steering weights rather than defaulting to
+  // zero: an unpinned rear channel with no cost would be free to oscillate.
+  std::array<float, kControlDim> control_effort{1.0e-3F, 1.0e-4F, 1.0e-3F};
+  std::array<float, kControlDim> control_smoothness{1.0e4F, 1.0e-1F, 1.0e4F};
   // Physical state/control-rate penalties. Acceleration and deceleration are
   // separated so braking comfort can be tuned independently from propulsion.
   float longitudinal_acceleration{0.0F};

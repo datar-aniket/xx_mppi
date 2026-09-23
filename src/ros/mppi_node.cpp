@@ -59,6 +59,10 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
   direct_control.steering_limit_rad = static_cast<float>(declare_parameter<double>(
       "direct_control_steering_limit_rad",
       static_cast<double>(yaml_defaults.direct_control.steering_limit_rad)));
+  direct_control.four_wheel = declare_parameter<bool>(
+    "direct_control_four_wheel", yaml_defaults.direct_control.four_wheel);
+  direct_control.four_wheel_topic = declare_parameter<std::string>(
+    "direct_control_four_wheel_topic", yaml_defaults.direct_control.four_wheel_topic);
   maximum_state_age_s_ = declare_parameter<double>("maximum_state_age_s", 0.10);
   future_tolerance_s_ = declare_parameter<double>("future_tolerance_s", 0.02);
   adapter_config_.require_solution_validity = declare_parameter<bool>(

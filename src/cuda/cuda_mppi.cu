@@ -20,6 +20,7 @@
 #include "xx_mppi/dynamics/frames.hpp"
 #include "xx_mppi/costs/map_boundary.hpp"
 #include "xx_mppi/dynamics/models/dynamic_bicycle_fiala.hpp"
+#include "xx_mppi/dynamics/models/dynamic_bicycle_fiala_4ws.hpp"
 #include "xx_mppi/dynamics/models/kinematic_bicycle.hpp"
 #include "xx_mppi/dynamics/tensorrt_model.hpp"
 
@@ -357,6 +358,8 @@ __device__ StateDerivative EvaluateDerivative(
   BodyDerivative body_derivative{};
   if (config.model_kind == ModelKind::kKinematicBicycle) {
     body_derivative = KinematicBicycle(parameters).Derivative(body, control);
+  } else if (config.model_kind == ModelKind::kDynamicBicycleFiala4ws) {
+    body_derivative = DynamicBicycleFiala4ws(parameters).Derivative(body, control);
   } else {
     body_derivative = DynamicBicycleFiala(parameters).Derivative(body, control);
   }
@@ -547,15 +550,41 @@ __global__ void GenerateNoise(
   if (sample >= config.samples) {
     return;
   }
+  // Philox yields four normals per call and the draws are written by index, not
+  // by channel name. Naming them individually is how a newly added channel ends
+  // up reading uninitialized noise; the static_assert turns outgrowing one call
+  // into a compile error instead.
+  static_assert(kControlDim <= 4U, "GenerateNoise supplies four draws per step");
   auto random = random_states[sample];
   for (std::uint16_t t = 0; t < config.horizon; ++t) {
-    const float2 draw = curand_normal2(&random);
+    const float4 draw = curand_normal4(&random);
+    const float draws[4] = {draw.x, draw.y, draw.z, draw.w};
     const std::size_t offset =
       (static_cast<std::size_t>(sample) * config.horizon + t) * kControlDim;
-    raw_noise[offset + kSteering] = draw.x;
-    raw_noise[offset + kWheelTorque] = draw.y;
+    for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+      raw_noise[offset + channel] = draws[channel];
+    }
   }
   random_states[sample] = random;
+}
+
+// Sampling sigma for one control channel at the current speed. Both steering
+// channels taper as the car speeds up, so the sampled steering range narrows
+// where a large angle would be violent; torque is unscaled. Four kernels need
+// this identically — the candidate builder, both cost paths, and the debug
+// breakdown — and they must agree, because the importance-sampling term divides
+// by exactly the sigma the candidate was drawn with.
+__device__ inline float ChannelSigma(
+  const DeviceMppi & config, const std::size_t channel, const float speed)
+{
+  const float sigma = config.sigma[channel];
+  const bool steering_channel = channel == kSteering || channel == kRearSteering;
+  if (!steering_channel || !config.speed_scaled_steering) {
+    return sigma;
+  }
+  return sigma * fminf(fmaxf(
+      config.steering_reference_speed / fmaxf(speed, 1.0F),
+      config.steering_minimum_scale), 1.0F);
 }
 
 __global__ void BuildCandidates(
@@ -585,12 +614,7 @@ __global__ void BuildCandidates(
       sum += raw_noise[source];
     }
   }
-  float sigma = config.sigma[control_channel];
-  if (control_channel == kSteering && config.speed_scaled_steering) {
-    sigma *= fminf(fmaxf(
-      config.steering_reference_speed / fmaxf(initial_state[kSpeed], 1.0F),
-      config.steering_minimum_scale), 1.0F);
-  }
+  const float sigma = ChannelSigma(config, control_channel, initial_state[kSpeed]);
   float epsilon = sigma * sum / sqrtf(static_cast<float>(window));
   if (time < config.delay_steps || (config.special_samples && sample == 0U)) {
     epsilon = 0.0F;
@@ -645,12 +669,7 @@ __global__ void RolloutAndCost(
       cost += weights.control_smoothness[channel] * delta * delta;
       const float rate = delta / config.dt;
       cost += weights.control_rate[channel] * rate * rate;
-      float sigma = config.sigma[channel];
-      if (channel == kSteering && config.speed_scaled_steering) {
-        sigma *= fminf(fmaxf(
-          config.steering_reference_speed / fmaxf(initial_state[kSpeed], 1.0F),
-          config.steering_minimum_scale), 1.0F);
-      }
+      const float sigma = ChannelSigma(config, channel, initial_state[kSpeed]);
       cost += config.gamma * nominal[t][channel] /
         fmaxf(sigma * sigma, 1.0e-12F) * (control[channel] - nominal[t][channel]);
     }
@@ -727,12 +746,7 @@ __global__ void NeuralStageCostAndPack(
     cost += weights.control_smoothness[channel] * delta * delta;
     const float rate = delta / config.dt;
     cost += weights.control_rate[channel] * rate * rate;
-    float sigma = config.sigma[channel];
-    if (channel == kSteering && config.speed_scaled_steering) {
-      sigma *= fminf(fmaxf(
-        config.steering_reference_speed / fmaxf(initial_state[kSpeed], 1.0F),
-        config.steering_minimum_scale), 1.0F);
-    }
+    const float sigma = ChannelSigma(config, channel, initial_state[kSpeed]);
     cost += config.gamma * nominal[time_index][channel] /
       fmaxf(sigma * sigma, 1.0e-12F) *
       (control[channel] - nominal[time_index][channel]);
@@ -1042,12 +1056,7 @@ __global__ void EvaluateCostBreakdown(
       const float rate_penalty = weights.control_rate[channel] * rate * rate;
       terms.values[kTermControlRate] += rate_penalty;
       terms.control_rate[channel] += rate_penalty;
-      float sigma = config.sigma[channel];
-      if (channel == kSteering && config.speed_scaled_steering) {
-        sigma *= fminf(fmaxf(
-          config.steering_reference_speed / fmaxf(initial_state[kSpeed], 1.0F),
-          config.steering_minimum_scale), 1.0F);
-      }
+      const float sigma = ChannelSigma(config, channel, initial_state[kSpeed]);
       terms.values[kTermImportanceSampling] += config.gamma * nominal[t][channel] /
         fmaxf(sigma * sigma, 1.0e-12F) * (control[channel] - nominal[t][channel]);
     }

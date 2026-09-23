@@ -3,6 +3,8 @@
 #include <string>
 
 #include <geometry_msgs/msg/twist.hpp>
+#include <rclcpp/time.hpp>
+#include <xxcar_msgs/msg/direct_control.hpp>
 
 #include "xx_mppi/controller/mppi_controller.hpp"
 
@@ -32,11 +34,23 @@ struct DirectControlConfig {
   // invert_steering parameter compensates for on this vehicle.
   float steering_scale{1.0F};
   float steering_limit_rad{0.5F};
+  // Publish xxcar_msgs/DirectControl on four_wheel_topic instead of a Twist on
+  // topic. Twist cannot carry a rear steering angle, so four-wheel steering
+  // needs this transport; it remains off by default until the rear servo and
+  // four-wheel vehicle model are explicitly configured.
+  bool four_wheel{false};
+  std::string four_wheel_topic{"direct_control"};
 };
 
 void ValidateDirectControlConfig(const DirectControlConfig & config);
 
 geometry_msgs::msg::Twist ToDirectControlMessage(
   const PlannedTrajectory & trajectory, const DirectControlConfig & config);
+
+// Four-wheel-steering transport. Carries the same converted front steering and
+// throttle as the Twist form, plus the rear steering angle Twist cannot express.
+xxcar_msgs::msg::DirectControl ToDirectControlMessage(
+  const PlannedTrajectory & trajectory, const DirectControlConfig & config,
+  const rclcpp::Time & stamp);
 
 }  // namespace xxcar::mppi

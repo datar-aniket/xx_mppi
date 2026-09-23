@@ -16,6 +16,16 @@ All values at the runtime boundary are SI physical units. If training used
 normalization, provide its four vectors in JSON and the exporter bakes both
 normalization and output de-normalization into ONNX.
 
+**This model cannot steer the rear axle.** The six-wide input has no slot for a
+rear steering angle, so `tensorrt_neural_derivative` is front-steer-only and
+config load pins the rear control channel to zero for it, exactly as it does for
+`kinematic_bicycle`. Supporting four-wheel steering here means retraining on
+4WS driving data and widening the contract to seven inputs — which touches
+`kInputWidth` in `dynamics/tensorrt_model.hpp`, the packing stride in both
+`NeuralStageCostAndPack` and `PackNeuralInputs` in `cuda/cuda_mppi.cu`,
+`tools/export_pytorch_dynamics.py`, and the dimension check in
+`tools/build_tensorrt_engine.cpp`. Use `dynamic_bicycle_fiala_4ws` instead.
+
 Export a TorchScript or serialized `nn.Module`:
 
 ```bash

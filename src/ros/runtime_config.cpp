@@ -44,6 +44,10 @@ RosRuntimeConfig LoadRosRuntimeConfig(const std::string & config_directory) {
     yaml, "direct_control_steering_scale", config.direct_control.steering_scale);
   config.direct_control.steering_limit_rad = GetOr(
     yaml, "direct_control_steering_limit_rad", config.direct_control.steering_limit_rad);
+  config.direct_control.four_wheel = GetOr(
+    yaml, "direct_control_four_wheel", config.direct_control.four_wheel);
+  config.direct_control.four_wheel_topic = GetOr(
+    yaml, "direct_control_four_wheel_topic", config.direct_control.four_wheel_topic);
   ValidateDirectControlConfig(config.direct_control);
   return config;
 }

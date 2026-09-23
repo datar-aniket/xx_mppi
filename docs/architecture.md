@@ -43,9 +43,16 @@ The internal state is float32 and ordered as:
 6. relative course heading `dphi` [rad]
 7. continuous path evolution `s` [m]
 
-Controls are `[steering_angle_rad, wheel_torque_nm]`. Default bounds are
-`[-0.5, 0.5] rad` and the provisional `[-5, 5] Nm`; both are runtime YAML
-parameters.
+Controls are `[steering_angle_rad, wheel_torque_nm, rear_steering_angle_rad]`.
+Default bounds are `[-0.5, 0.5] rad` and the provisional `[-5, 5] Nm`; both are
+runtime YAML parameters.
+
+The rear steering channel is read only by `dynamic_bicycle_fiala_4ws`. For every
+other model, config load pins it — zero sigma with zero-width bounds, which
+forces each candidate to exactly zero — so the solver never spends samples on a
+control the active model ignores. It ships pinned: the MCU wire protocol carries
+no rear angle yet, so planning rear-axle motion would produce trajectories the
+car cannot execute. See `four_wheel_steering.md`.
 
 The TRX-4 profile enables `locked_awd`. Its Fiala model evaluates combined
 longitudinal/lateral slip at both axles using the common wheel-speed state and

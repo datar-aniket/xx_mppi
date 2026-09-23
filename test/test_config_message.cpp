@@ -76,6 +76,17 @@ void WriteFile(const std::filesystem::path & path, const std::string & contents)
   stream << contents;
 }
 
+// A model.yaml naming one model, with every other path resolved inside the
+// overlay. The shipped file points its raceline at an environment variable,
+// which a test must not depend on.
+std::string ModelYaml(const std::string & name) {
+  return "name: " + name + "\n"
+         "raceline_path: raceline.csv\n"
+         "vehicle_params_path: vehicle.yaml\n"
+         "neural_model_path: psi_dynamics.plan\n"
+         "projection_window_m: 10.0\n";
+}
+
 }  // namespace
 
 TEST(Config, DerivesRacelineCsvFromCurrentMapDirectory) {
@@ -91,6 +102,106 @@ TEST(Config, DerivesRacelineCsvFromCurrentMapDirectory) {
   EXPECT_EQ(
     std::filesystem::path(config.raceline_path).filename(),
     "current_map_frenet_map.csv");
+}
+
+// The shipped config must stay front-steer-only: the MCU wire protocol carries
+// no rear angle, so a solver planning rear-axle motion would be planning
+// something the car cannot execute.
+TEST(Config, ShippedConfigPinsRearSteeringToZero) {
+  const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
+  EXPECT_FALSE(ModelSteersRearAxle(config.model_kind));
+  EXPECT_FLOAT_EQ(config.mppi.sigma[kRearSteering], 0.0F);
+  EXPECT_FLOAT_EQ(config.mppi.control_min[kRearSteering], 0.0F);
+  EXPECT_FLOAT_EQ(config.mppi.control_max[kRearSteering], 0.0F);
+}
+
+// A front-steer-only model ignores the rear channel entirely, so sampling it
+// would spend part of every solve on a control that cannot move the
+// trajectory. The pin must win over whatever the YAML asks for.
+TEST(Config, PinsRearSteeringWhenTheModelDoesNotSteerTheRearAxle) {
+  const auto directory = MakeOverlayConfig("xx_mppi_test_rear_pin_config");
+  const auto mppi_path = directory / "mppi.yaml";
+  std::ifstream original(mppi_path);
+  const std::string body(
+    (std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+  original.close();
+
+  const std::string rear_active =
+    "sigma: {steering_angle_rad: 0.15, wheel_torque_nm: 0.3, "
+    "rear_steering_angle_rad: 0.1}\n"
+    "control_bounds:\n"
+    "  min: {steering_angle_rad: -0.4, wheel_torque_nm: -1.0, "
+    "rear_steering_angle_rad: -0.2}\n"
+    "  max: {steering_angle_rad: 0.4, wheel_torque_nm: 0.8, "
+    "rear_steering_angle_rad: 0.2}\n";
+  WriteFile(mppi_path, rear_active + body);
+
+  WriteFile(
+    directory / "model.yaml",
+    ModelYaml("dynamic_bicycle_fiala"));
+  const auto pinned = LoadControllerConfig(directory.string());
+  EXPECT_FLOAT_EQ(pinned.mppi.sigma[kRearSteering], 0.0F);
+  EXPECT_FLOAT_EQ(pinned.mppi.control_min[kRearSteering], 0.0F);
+  EXPECT_FLOAT_EQ(pinned.mppi.control_max[kRearSteering], 0.0F);
+
+  // The 4WS model keeps what the YAML asked for.
+  WriteFile(
+    directory / "model.yaml",
+    ModelYaml("dynamic_bicycle_fiala_4ws"));
+  const auto active = LoadControllerConfig(directory.string());
+  EXPECT_TRUE(ModelSteersRearAxle(active.model_kind));
+  EXPECT_FLOAT_EQ(active.mppi.sigma[kRearSteering], 0.1F);
+  EXPECT_FLOAT_EQ(active.mppi.control_min[kRearSteering], -0.2F);
+  EXPECT_FLOAT_EQ(active.mppi.control_max[kRearSteering], 0.2F);
+
+  // The exported TensorRT engine takes a fixed six-wide input with no slot for
+  // a rear angle, so it is front-steer-only and gets pinned like any other.
+  WriteFile(
+    directory / "model.yaml",
+    ModelYaml("tensorrt_neural_derivative"));
+  const auto neural = LoadControllerConfig(directory.string());
+  EXPECT_FALSE(ModelSteersRearAxle(neural.model_kind));
+  EXPECT_FLOAT_EQ(neural.mppi.sigma[kRearSteering], 0.0F);
+  std::filesystem::remove_all(directory);
+}
+
+// Half-pinned states are configuration mistakes: a collapsed interval that is
+// still being sampled, or a zero sigma with bounds left open.
+TEST(Config, RejectsAHalfPinnedControlChannel) {
+  const auto directory = MakeOverlayConfig("xx_mppi_test_half_pin_config");
+  const auto mppi_path = directory / "mppi.yaml";
+  std::ifstream original(mppi_path);
+  const std::string body(
+    (std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+  original.close();
+  WriteFile(
+    directory / "model.yaml",
+    ModelYaml("dynamic_bicycle_fiala_4ws"));
+
+  // Sampled, but with a collapsed interval that clamps every draw to zero.
+  WriteFile(
+    mppi_path,
+    "sigma: {steering_angle_rad: 0.15, wheel_torque_nm: 0.3, "
+    "rear_steering_angle_rad: 0.1}\n"
+    "control_bounds:\n"
+    "  min: {steering_angle_rad: -0.4, wheel_torque_nm: -1.0, "
+    "rear_steering_angle_rad: 0.0}\n"
+    "  max: {steering_angle_rad: 0.4, wheel_torque_nm: 0.8, "
+    "rear_steering_angle_rad: 0.0}\n" + body);
+  EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+
+  // Never sampled, but with bounds left open as though it were active.
+  WriteFile(
+    mppi_path,
+    "sigma: {steering_angle_rad: 0.15, wheel_torque_nm: 0.3, "
+    "rear_steering_angle_rad: 0.0}\n"
+    "control_bounds:\n"
+    "  min: {steering_angle_rad: -0.4, wheel_torque_nm: -1.0, "
+    "rear_steering_angle_rad: -0.2}\n"
+    "  max: {steering_angle_rad: 0.4, wheel_torque_nm: 0.8, "
+    "rear_steering_angle_rad: 0.2}\n" + body);
+  EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+  std::filesystem::remove_all(directory);
 }
 
 TEST(Config, SelectsTheRolloutFrame) {
