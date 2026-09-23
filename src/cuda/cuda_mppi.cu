@@ -133,6 +133,29 @@ struct DeviceMppi {
   FrameKind frame;
 };
 
+struct DeviceRefinement {
+  bool enabled;
+  std::uint16_t sqp_iterations;
+  std::uint16_t pcg_iterations;
+  float pcg_tolerance;
+  float constraint_tolerance;
+  float finite_difference_relative_step;
+  float hessian_regularization;
+  float merit_constraint_penalty;
+  float state_proximity_weight;
+  float control_proximity_weight;
+  float maximum_state_step;
+  float maximum_control_step[kControlDim];
+  float maximum_control_rate[kControlDim];
+};
+
+struct RefinementMetrics {
+  float cost;
+  float merit;
+  float maximum_dynamics_residual;
+  std::uint8_t safe;
+};
+
 __device__ float WrapTrackS(float s, const DeviceTrack & track) {
   if (!track.closed) {
     return fminf(fmaxf(s, track.s_min), track.s_max);
@@ -1157,6 +1180,662 @@ __global__ void SigmaFinalize(
     sqrtf(weighted + 1.0e-12F) / sqrtf(unweighted + 1.0e-12F);
 }
 
+// The refinement solves the multiple-shooting QP in increments.  Its Hessian
+// approximation is block diagonal (state and input blocks at each stage), so
+// the Schur complement is block tridiagonal in the dynamics multipliers.  This
+// is the structure used by the native one-block PCG implementation below.
+constexpr std::uint16_t kMaximumRefinementHorizon = 128U;
+constexpr std::uint32_t kRefinementThreads = 256U;
+constexpr std::size_t kLineSearchCandidates = kMpcLineSearchCandidates;
+
+__device__ float RefinementStateCost(
+  const State & state, const State & anchor, const std::uint16_t time,
+  const float initial_path_s, const DeviceTrack track,
+  const DeviceReference reference, const DeviceObstacleField obstacle_field,
+  const DeviceMppi config, const DeviceCosts weights,
+  const DeviceRefinement refinement)
+{
+  const float hint = config.frame == FrameKind::kFrenet ?
+    state[kPathEvolution] : reference.s_grid[time];
+  const FrenetView frenet = FrameView(state, hint, track, config);
+  bool crashed = false;
+  bool excessive_sideslip = false;
+  bool obstacle_latched = false;
+  float cost = StateCost<false>(
+    state, frenet, reference.states[time], track, reference, obstacle_field,
+    config, weights, crashed, excessive_sideslip, obstacle_latched,
+    powf(weights.crash_discount, static_cast<float>(time)), false);
+  for (std::size_t i = 0; i < kStateDim; ++i) {
+    const float difference = state[i] - anchor[i];
+    cost += refinement.state_proximity_weight * difference * difference;
+  }
+  if (time == config.horizon) {
+    cost -= weights.progress * (frenet.path_evolution - initial_path_s);
+  }
+  return cost;
+}
+
+__global__ void LinearizeRefinementDynamics(
+  const State * states, const Control * controls, float * dynamics_a,
+  float * dynamics_b, State * defects, const DeviceTrack track,
+  const DeviceMppi config, const DeviceRefinement refinement,
+  const VehicleParameters parameters)
+{
+  const std::uint16_t time = static_cast<std::uint16_t>(blockIdx.x);
+  if (time >= config.horizon) {
+    return;
+  }
+  const State state = states[time];
+  const Control control = controls[time];
+  if (threadIdx.x == 0U) {
+    const State predicted = IntegrateAnalyticStep(state, control, track, config, parameters);
+    State residual{};
+    for (std::size_t i = 0; i < kStateDim; ++i) {
+      residual[i] = states[time + 1U][i] - predicted[i];
+    }
+    defects[time] = residual;
+  }
+  if (threadIdx.x < kStateDim) {
+    const std::size_t column = threadIdx.x;
+    const float scale = fmaxf(fabsf(state[column]), 1.0F);
+    const float epsilon = refinement.finite_difference_relative_step * scale;
+    State positive = state;
+    State negative = state;
+    positive[column] += epsilon;
+    negative[column] -= epsilon;
+    const State next_positive = IntegrateAnalyticStep(
+      positive, control, track, config, parameters);
+    const State next_negative = IntegrateAnalyticStep(
+      negative, control, track, config, parameters);
+    for (std::size_t row = 0; row < kStateDim; ++row) {
+      dynamics_a[(static_cast<std::size_t>(time) * kStateDim + row) * kStateDim + column] =
+        (next_positive[row] - next_negative[row]) / (2.0F * epsilon);
+    }
+  }
+  if (threadIdx.x < kControlDim) {
+    const std::size_t column = threadIdx.x;
+    const float scale = fmaxf(fabsf(control[column]), 1.0F);
+    const float epsilon = refinement.finite_difference_relative_step * scale;
+    Control positive = control;
+    Control negative = control;
+    positive[column] += epsilon;
+    negative[column] -= epsilon;
+    const State next_positive = IntegrateAnalyticStep(
+      state, positive, track, config, parameters);
+    const State next_negative = IntegrateAnalyticStep(
+      state, negative, track, config, parameters);
+    for (std::size_t row = 0; row < kStateDim; ++row) {
+      dynamics_b[(static_cast<std::size_t>(time) * kStateDim + row) * kControlDim + column] =
+        (next_positive[row] - next_negative[row]) / (2.0F * epsilon);
+    }
+  }
+}
+
+__global__ void QuadraticizeRefinementCost(
+  const State * states, const Control * controls, const State * anchor_states,
+  const Control * anchor_controls, const Control previous_control,
+  float * state_gradient, float * state_inverse_hessian,
+  float * control_gradient, float * control_inverse_hessian,
+  const float initial_path_s, const DeviceTrack track,
+  const DeviceReference reference, const DeviceObstacleField obstacle_field,
+  const DeviceMppi config, const DeviceCosts weights,
+  const DeviceRefinement refinement)
+{
+  const std::size_t flat = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t state_count = static_cast<std::size_t>(config.horizon + 1U) * kStateDim;
+  if (flat < state_count) {
+    const std::uint16_t time = static_cast<std::uint16_t>(flat / kStateDim);
+    const std::size_t channel = flat % kStateDim;
+    const State center_state = states[time];
+    const float scale = fmaxf(fabsf(center_state[channel]), 1.0F);
+    const float epsilon = refinement.finite_difference_relative_step * scale;
+    State positive = center_state;
+    State negative = center_state;
+    positive[channel] += epsilon;
+    negative[channel] -= epsilon;
+    const float center = RefinementStateCost(
+      center_state, anchor_states[time], time, initial_path_s, track, reference,
+      obstacle_field, config, weights, refinement);
+    const float upper = RefinementStateCost(
+      positive, anchor_states[time], time, initial_path_s, track, reference,
+      obstacle_field, config, weights, refinement);
+    const float lower = RefinementStateCost(
+      negative, anchor_states[time], time, initial_path_s, track, reference,
+      obstacle_field, config, weights, refinement);
+    const float gradient = (upper - lower) / (2.0F * epsilon);
+    const float hessian = fmaxf(
+      (upper - 2.0F * center + lower) / (epsilon * epsilon),
+      refinement.hessian_regularization);
+    state_gradient[flat] = isfinite(gradient) ? gradient : 0.0F;
+    state_inverse_hessian[flat] = 1.0F /
+      (isfinite(hessian) ? hessian : refinement.hessian_regularization);
+  }
+
+  const std::size_t control_count = static_cast<std::size_t>(config.horizon) * kControlDim;
+  if (flat < control_count) {
+    const std::uint16_t time = static_cast<std::uint16_t>(flat / kControlDim);
+    const std::size_t channel = flat % kControlDim;
+    const float value = controls[time][channel];
+    const float anchor = anchor_controls[time][channel];
+    const float prior = time == 0U ? previous_control[channel] : controls[time - 1U][channel];
+    const float pair_weight = weights.control_smoothness[channel] +
+      weights.control_rate[channel] / (config.dt * config.dt);
+    float gradient = 2.0F * weights.control_effort[channel] * value +
+      2.0F * refinement.control_proximity_weight * (value - anchor) +
+      2.0F * pair_weight * (value - prior);
+    float hessian = 2.0F * (weights.control_effort[channel] +
+      refinement.control_proximity_weight + pair_weight);
+    if (time + 1U < config.horizon) {
+      gradient += 2.0F * pair_weight * (value - controls[time + 1U][channel]);
+      hessian += 2.0F * pair_weight;
+    }
+    hessian = fmaxf(hessian, refinement.hessian_regularization);
+    control_gradient[flat] = isfinite(gradient) ? gradient : 0.0F;
+    control_inverse_hessian[flat] = 1.0F /
+      (isfinite(hessian) ? hessian : refinement.hessian_regularization);
+  }
+}
+
+__device__ bool InvertRefinementBlock(const float * source, float * inverse) {
+  float augmented[kStateDim][2U * kStateDim];
+  for (std::size_t row = 0; row < kStateDim; ++row) {
+    for (std::size_t column = 0; column < kStateDim; ++column) {
+      augmented[row][column] = source[row * kStateDim + column];
+      augmented[row][kStateDim + column] = row == column ? 1.0F : 0.0F;
+    }
+  }
+  for (std::size_t pivot = 0; pivot < kStateDim; ++pivot) {
+    std::size_t best = pivot;
+    float magnitude = fabsf(augmented[pivot][pivot]);
+    for (std::size_t row = pivot + 1U; row < kStateDim; ++row) {
+      const float candidate = fabsf(augmented[row][pivot]);
+      if (candidate > magnitude) {
+        magnitude = candidate;
+        best = row;
+      }
+    }
+    if (!(magnitude > 1.0e-12F) || !isfinite(magnitude)) {
+      return false;
+    }
+    if (best != pivot) {
+      for (std::size_t column = 0; column < 2U * kStateDim; ++column) {
+        const float temporary = augmented[pivot][column];
+        augmented[pivot][column] = augmented[best][column];
+        augmented[best][column] = temporary;
+      }
+    }
+    const float divisor = augmented[pivot][pivot];
+    for (std::size_t column = 0; column < 2U * kStateDim; ++column) {
+      augmented[pivot][column] /= divisor;
+    }
+    for (std::size_t row = 0; row < kStateDim; ++row) {
+      if (row == pivot) {
+        continue;
+      }
+      const float factor = augmented[row][pivot];
+      for (std::size_t column = 0; column < 2U * kStateDim; ++column) {
+        augmented[row][column] -= factor * augmented[pivot][column];
+      }
+    }
+  }
+  for (std::size_t row = 0; row < kStateDim; ++row) {
+    for (std::size_t column = 0; column < kStateDim; ++column) {
+      inverse[row * kStateDim + column] = augmented[row][kStateDim + column];
+    }
+  }
+  return true;
+}
+
+__global__ void BuildRefinementSchur(
+  const float * dynamics_a, const float * dynamics_b, const State * defects,
+  const float * state_gradient, const float * state_inverse_hessian,
+  const float * control_gradient, const float * control_inverse_hessian,
+  float * diagonal, float * upper, float * inverse_diagonal, float * rhs,
+  const DeviceMppi config, const DeviceRefinement refinement)
+{
+  const std::uint16_t row_index = static_cast<std::uint16_t>(blockIdx.x);
+  if (row_index > config.horizon || threadIdx.x != 0U) {
+    return;
+  }
+  float block[kStateDim * kStateDim]{};
+  float row_rhs[kStateDim]{};
+  if (row_index == 0U) {
+    for (std::size_t i = 0; i < kStateDim; ++i) {
+      block[i * kStateDim + i] = state_inverse_hessian[i];
+      row_rhs[i] = -state_inverse_hessian[i] * state_gradient[i];
+    }
+  } else {
+    const std::uint16_t time = static_cast<std::uint16_t>(row_index - 1U);
+    const float * a = dynamics_a + static_cast<std::size_t>(time) * kStateDim * kStateDim;
+    const float * b = dynamics_b + static_cast<std::size_t>(time) * kStateDim * kControlDim;
+    const std::size_t state_offset = static_cast<std::size_t>(time) * kStateDim;
+    const std::size_t next_state_offset = static_cast<std::size_t>(time + 1U) * kStateDim;
+    const std::size_t control_offset = static_cast<std::size_t>(time) * kControlDim;
+    for (std::size_t i = 0; i < kStateDim; ++i) {
+      for (std::size_t j = 0; j < kStateDim; ++j) {
+        float value = i == j ? state_inverse_hessian[next_state_offset + i] : 0.0F;
+        for (std::size_t k = 0; k < kStateDim; ++k) {
+          value += a[i * kStateDim + k] * state_inverse_hessian[state_offset + k] *
+            a[j * kStateDim + k];
+        }
+        for (std::size_t k = 0; k < kControlDim; ++k) {
+          value += b[i * kControlDim + k] * control_inverse_hessian[control_offset + k] *
+            b[j * kControlDim + k];
+        }
+        block[i * kStateDim + j] = value;
+      }
+      float h_g_inverse = state_inverse_hessian[next_state_offset + i] *
+        state_gradient[next_state_offset + i];
+      for (std::size_t k = 0; k < kStateDim; ++k) {
+        h_g_inverse -= a[i * kStateDim + k] * state_inverse_hessian[state_offset + k] *
+          state_gradient[state_offset + k];
+      }
+      for (std::size_t k = 0; k < kControlDim; ++k) {
+        h_g_inverse -= b[i * kControlDim + k] * control_inverse_hessian[control_offset + k] *
+          control_gradient[control_offset + k];
+      }
+      row_rhs[i] = defects[time][i] - h_g_inverse;
+    }
+  }
+  for (std::size_t i = 0; i < kStateDim; ++i) {
+    block[i * kStateDim + i] += refinement.hessian_regularization;
+  }
+  float inverse[kStateDim * kStateDim]{};
+  const bool invertible = InvertRefinementBlock(block, inverse);
+  const std::size_t block_offset = static_cast<std::size_t>(row_index) * kStateDim * kStateDim;
+  for (std::size_t i = 0; i < kStateDim * kStateDim; ++i) {
+    diagonal[block_offset + i] = block[i];
+    inverse_diagonal[block_offset + i] = invertible ? inverse[i] :
+      ((i / kStateDim == i % kStateDim) ? 1.0F / refinement.hessian_regularization : 0.0F);
+  }
+  for (std::size_t i = 0; i < kStateDim; ++i) {
+    rhs[static_cast<std::size_t>(row_index) * kStateDim + i] = row_rhs[i];
+  }
+  if (row_index < config.horizon) {
+    const float * a = dynamics_a + static_cast<std::size_t>(row_index) * kStateDim * kStateDim;
+    const std::size_t state_offset = static_cast<std::size_t>(row_index) * kStateDim;
+    float * destination = upper + static_cast<std::size_t>(row_index) * kStateDim * kStateDim;
+    for (std::size_t i = 0; i < kStateDim; ++i) {
+      for (std::size_t j = 0; j < kStateDim; ++j) {
+        destination[i * kStateDim + j] =
+          -state_inverse_hessian[state_offset + i] * a[j * kStateDim + i];
+      }
+    }
+  }
+}
+
+__device__ float RefinementBlockDot(float value, float * scratch) {
+  scratch[threadIdx.x] = value;
+  __syncthreads();
+  for (std::uint32_t span = blockDim.x / 2U; span > 0U; span >>= 1U) {
+    if (threadIdx.x < span) {
+      scratch[threadIdx.x] += scratch[threadIdx.x + span];
+    }
+    __syncthreads();
+  }
+  return scratch[0];
+}
+
+__device__ float RefinementSchurEntry(
+  const std::size_t flat, const float * vector, const float * diagonal,
+  const float * upper, const std::size_t block_count)
+{
+  const std::size_t row = flat / kStateDim;
+  const std::size_t component = flat % kStateDim;
+  const float * center = diagonal + row * kStateDim * kStateDim;
+  float value = 0.0F;
+  for (std::size_t column = 0; column < kStateDim; ++column) {
+    value += center[component * kStateDim + column] *
+      vector[row * kStateDim + column];
+  }
+  if (row + 1U < block_count) {
+    const float * next = upper + row * kStateDim * kStateDim;
+    for (std::size_t column = 0; column < kStateDim; ++column) {
+      value += next[component * kStateDim + column] *
+        vector[(row + 1U) * kStateDim + column];
+    }
+  }
+  if (row > 0U) {
+    const float * previous = upper + (row - 1U) * kStateDim * kStateDim;
+    for (std::size_t column = 0; column < kStateDim; ++column) {
+      value += previous[column * kStateDim + component] *
+        vector[(row - 1U) * kStateDim + column];
+    }
+  }
+  return value;
+}
+
+__global__ void SolveRefinementPcg(
+  const float * diagonal, const float * upper, const float * inverse_diagonal,
+  const float * rhs, float * dual, std::uint16_t * iterations,
+  const DeviceMppi config, const DeviceRefinement refinement)
+{
+  extern __shared__ float shared[];
+  const std::size_t count = static_cast<std::size_t>(config.horizon + 1U) * kStateDim;
+  float * solution = shared;
+  float * residual = solution + count;
+  float * preconditioned = residual + count;
+  float * direction = preconditioned + count;
+  float * product = direction + count;
+  float * scratch = product + count;
+  for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+    solution[index] = dual[index];
+  }
+  __syncthreads();
+  for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+    residual[index] = rhs[index] - RefinementSchurEntry(
+      index, solution, diagonal, upper, config.horizon + 1U);
+  }
+  __syncthreads();
+  for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+    const std::size_t row = index / kStateDim;
+    const std::size_t component = index % kStateDim;
+    const float * inverse = inverse_diagonal + row * kStateDim * kStateDim;
+    float value = 0.0F;
+    for (std::size_t column = 0; column < kStateDim; ++column) {
+      value += inverse[component * kStateDim + column] *
+        residual[row * kStateDim + column];
+    }
+    preconditioned[index] = value;
+    direction[index] = value;
+  }
+  __syncthreads();
+  float partial = 0.0F;
+  for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+    partial += residual[index] * preconditioned[index];
+  }
+  float rz = RefinementBlockDot(partial, scratch);
+  std::uint16_t completed = 0U;
+  for (std::uint16_t iteration = 0U; iteration < refinement.pcg_iterations; ++iteration) {
+    if (!isfinite(rz) || rz <= refinement.pcg_tolerance * refinement.pcg_tolerance) {
+      break;
+    }
+    for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+      product[index] = RefinementSchurEntry(
+        index, direction, diagonal, upper, config.horizon + 1U);
+    }
+    __syncthreads();
+    partial = 0.0F;
+    for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+      partial += direction[index] * product[index];
+    }
+    const float denominator = RefinementBlockDot(partial, scratch);
+    if (!isfinite(denominator) || fabsf(denominator) < 1.0e-20F) {
+      break;
+    }
+    const float alpha = rz / denominator;
+    for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+      solution[index] += alpha * direction[index];
+      residual[index] -= alpha * product[index];
+    }
+    __syncthreads();
+    for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+      const std::size_t row = index / kStateDim;
+      const std::size_t component = index % kStateDim;
+      const float * inverse = inverse_diagonal + row * kStateDim * kStateDim;
+      float value = 0.0F;
+      for (std::size_t column = 0; column < kStateDim; ++column) {
+        value += inverse[component * kStateDim + column] *
+          residual[row * kStateDim + column];
+      }
+      preconditioned[index] = value;
+    }
+    __syncthreads();
+    partial = 0.0F;
+    for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+      partial += residual[index] * preconditioned[index];
+    }
+    const float next_rz = RefinementBlockDot(partial, scratch);
+    const float beta = next_rz / fmaxf(rz, 1.0e-20F);
+    for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+      direction[index] = preconditioned[index] + beta * direction[index];
+    }
+    __syncthreads();
+    rz = next_rz;
+    completed = static_cast<std::uint16_t>(iteration + 1U);
+  }
+  for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
+    dual[index] = isfinite(solution[index]) ? solution[index] : 0.0F;
+  }
+  if (threadIdx.x == 0U) {
+    *iterations = completed;
+  }
+}
+
+__global__ void RecoverRefinementStep(
+  const float * dynamics_a, const float * dynamics_b,
+  const float * state_gradient, const float * state_inverse_hessian,
+  const float * control_gradient, const float * control_inverse_hessian,
+  const float * dual, State * state_step, Control * control_step,
+  const DeviceMppi config, const DeviceRefinement refinement)
+{
+  const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t state_count = static_cast<std::size_t>(config.horizon + 1U) * kStateDim;
+  if (index < state_count) {
+    const std::uint16_t time = static_cast<std::uint16_t>(index / kStateDim);
+    const std::size_t channel = index % kStateDim;
+    float stationarity = state_gradient[index] + dual[index];
+    if (time < config.horizon) {
+      const float * a = dynamics_a + static_cast<std::size_t>(time) * kStateDim * kStateDim;
+      for (std::size_t row = 0; row < kStateDim; ++row) {
+        stationarity -= a[row * kStateDim + channel] *
+          dual[static_cast<std::size_t>(time + 1U) * kStateDim + row];
+      }
+    }
+    float step = -state_inverse_hessian[index] * stationarity;
+    step = fminf(fmaxf(step, -refinement.maximum_state_step), refinement.maximum_state_step);
+    if (time == 0U) {
+      step = 0.0F;
+    }
+    state_step[time][channel] = isfinite(step) ? step : 0.0F;
+  }
+  const std::size_t control_count = static_cast<std::size_t>(config.horizon) * kControlDim;
+  if (index < control_count) {
+    const std::uint16_t time = static_cast<std::uint16_t>(index / kControlDim);
+    const std::size_t channel = index % kControlDim;
+    const float * b = dynamics_b + static_cast<std::size_t>(time) * kStateDim * kControlDim;
+    float stationarity = control_gradient[index];
+    for (std::size_t row = 0; row < kStateDim; ++row) {
+      stationarity -= b[row * kControlDim + channel] *
+        dual[static_cast<std::size_t>(time + 1U) * kStateDim + row];
+    }
+    float step = -control_inverse_hessian[index] * stationarity;
+    const float limit = refinement.maximum_control_step[channel];
+    step = fminf(fmaxf(step, -limit), limit);
+    if (time < config.delay_steps) {
+      step = 0.0F;
+    }
+    control_step[time][channel] = isfinite(step) ? step : 0.0F;
+  }
+}
+
+__device__ float RefinementAlpha(const std::size_t candidate) {
+  constexpr float values[kLineSearchCandidates] = {0.0F, 1.0F, 0.7F, 0.3F, 0.1F, 0.03F, 0.01F};
+  return values[candidate];
+}
+
+__global__ void EvaluateRefinementLineSearch(
+  const State initial_state, const float initial_path_s,
+  const Control previous_control, const State * states, const Control * controls,
+  const Control * control_step,
+  const State * anchor_states, const Control * anchor_controls,
+  State * candidate_states, Control * candidate_controls,
+  RefinementMetrics * metrics, const DeviceTrack track,
+  const DeviceReference reference, const DeviceObstacleField obstacle_field,
+  const DeviceMppi config, const DeviceCosts weights,
+  const DeviceRefinement refinement, const VehicleParameters parameters)
+{
+  const std::size_t candidate = blockIdx.x;
+  if (candidate >= kLineSearchCandidates || threadIdx.x != 0U) {
+    return;
+  }
+  const float alpha = RefinementAlpha(candidate);
+  State * candidate_state = candidate_states + candidate * (config.horizon + 1U);
+  Control * candidate_control = candidate_controls + candidate * config.horizon;
+  candidate_state[0] = initial_state;
+  Control prior = previous_control;
+  for (std::uint16_t time = 0U; time < config.horizon; ++time) {
+    Control value = controls[time];
+    // Candidate zero is the exact current SQP primal and defines the line-search
+    // baseline. Projecting it here would silently change MPPI's controls while
+    // leaving its warm-start states untouched, manufacturing a dynamics defect.
+    if (candidate != 0U) {
+      for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+        value[channel] += alpha * control_step[time][channel];
+        value[channel] = fminf(fmaxf(
+          value[channel], config.control_min[channel]), config.control_max[channel]);
+        const float rate_delta = refinement.maximum_control_rate[channel] * config.dt;
+        value[channel] = fminf(fmaxf(
+          value[channel], prior[channel] - rate_delta), prior[channel] + rate_delta);
+        if (time < config.delay_steps) {
+          value[channel] = anchor_controls[time][channel];
+        }
+      }
+    }
+    candidate_control[time] = value;
+    prior = value;
+  }
+
+  if (candidate == 0U) {
+    for (std::uint16_t time = 1U; time <= config.horizon; ++time) {
+      candidate_state[time] = states[time];
+    }
+  } else {
+    // The MPPI expected trajectory is accepted directly as the SQP warm start.
+    // Only trial controls are rolled out here: this is the nonlinear
+    // feasibility restoration used by line search, and the seven trials run in
+    // parallel CUDA blocks.
+    for (std::uint16_t time = 0U; time < config.horizon; ++time) {
+      candidate_state[time + 1U] = IntegrateAnalyticStep(
+        candidate_state[time], candidate_control[time], track, config, parameters);
+    }
+  }
+
+  bool crashed = false;
+  bool excessive_sideslip = false;
+  bool obstacle_latched = false;
+  float cost = 0.0F;
+  float residual_l1 = 0.0F;
+  float maximum_residual = 0.0F;
+  float discount = 1.0F;
+  float s_hint = initial_path_s;
+  prior = previous_control;
+  for (std::uint16_t time = 0U; time < config.horizon; ++time) {
+    const FrenetView frenet = FrameView(candidate_state[time], s_hint, track, config);
+    s_hint = frenet.path_evolution;
+    cost += StateCost<false>(
+      candidate_state[time], frenet, reference.states[time], track, reference,
+      obstacle_field, config, weights, crashed, excessive_sideslip,
+      obstacle_latched, discount, time != 0U);
+    discount *= weights.crash_discount;
+    for (std::size_t channel = 0; channel < kStateDim; ++channel) {
+      const float difference = candidate_state[time][channel] - anchor_states[time][channel];
+      cost += refinement.state_proximity_weight * difference * difference;
+    }
+    const Control control = candidate_control[time];
+    for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+      cost += weights.control_effort[channel] * control[channel] * control[channel];
+      const float delta = control[channel] - prior[channel];
+      cost += weights.control_smoothness[channel] * delta * delta;
+      const float rate = delta / config.dt;
+      cost += weights.control_rate[channel] * rate * rate;
+      const float anchor_difference = control[channel] - anchor_controls[time][channel];
+      cost += refinement.control_proximity_weight * anchor_difference * anchor_difference;
+    }
+    prior = control;
+    const State predicted = IntegrateAnalyticStep(
+      candidate_state[time], control, track, config, parameters);
+    const float acceleration =
+      (candidate_state[time + 1U][kSpeed] - candidate_state[time][kSpeed]) / config.dt;
+    cost += (acceleration >= 0.0F ? weights.longitudinal_acceleration :
+      weights.longitudinal_deceleration) * acceleration * acceleration;
+    for (std::size_t channel = 0; channel < kStateDim; ++channel) {
+      const float residual = fabsf(candidate_state[time + 1U][channel] - predicted[channel]);
+      residual_l1 += residual;
+      maximum_residual = fmaxf(maximum_residual, residual);
+    }
+  }
+  const FrenetView terminal_frenet = FrameView(
+    candidate_state[config.horizon], s_hint, track, config);
+  cost += StateCost<false>(
+    candidate_state[config.horizon], terminal_frenet,
+    reference.states[config.horizon], track, reference, obstacle_field,
+    config, weights, crashed, excessive_sideslip, obstacle_latched, discount, true);
+  for (std::size_t channel = 0; channel < kStateDim; ++channel) {
+    const float difference = candidate_state[config.horizon][channel] -
+      anchor_states[config.horizon][channel];
+    cost += refinement.state_proximity_weight * difference * difference;
+  }
+  cost -= weights.progress * (terminal_frenet.path_evolution - initial_path_s);
+  const bool finite = isfinite(cost) && isfinite(residual_l1) && isfinite(maximum_residual);
+  metrics[candidate] = RefinementMetrics{
+    finite ? cost : CUDART_INF_F,
+    finite ? cost + refinement.merit_constraint_penalty * residual_l1 : CUDART_INF_F,
+    finite ? maximum_residual : CUDART_INF_F,
+    static_cast<std::uint8_t>(finite && !crashed && !excessive_sideslip && !obstacle_latched)};
+}
+
+__global__ void SelectRefinementLineSearch(
+  const RefinementMetrics * metrics, std::uint32_t * selected,
+  RefinementMetrics * initial_metrics, RefinementMetrics * final_metrics)
+{
+  if (blockIdx.x != 0U || threadIdx.x != 0U) {
+    return;
+  }
+  *initial_metrics = metrics[0];
+  std::uint32_t choice = 0U;
+  for (std::uint32_t candidate = 1U; candidate < kLineSearchCandidates; ++candidate) {
+    if (metrics[candidate].merit < metrics[0].merit) {
+      choice = candidate;
+      break;
+    }
+  }
+  *selected = choice;
+  *final_metrics = metrics[choice];
+}
+
+__global__ void ApplyRefinementLineSearch(
+  State * states, Control * controls, const State * candidate_states,
+  const Control * candidate_controls, const std::uint32_t * selected,
+  const DeviceMppi config)
+{
+  const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const std::size_t state_count = static_cast<std::size_t>(config.horizon + 1U);
+  if (index < state_count) {
+    states[index] = candidate_states[
+      static_cast<std::size_t>(*selected) * state_count + index];
+  }
+  if (index < config.horizon) {
+    controls[index] = candidate_controls[
+      static_cast<std::size_t>(*selected) * config.horizon + index];
+  }
+}
+
+__global__ void CommitRefinement(
+  const State * refined_states, const Control * refined_controls,
+  State * expected, Control * updated, const RefinementMetrics * initial_metrics,
+  const RefinementMetrics * final_metrics, std::uint8_t * accepted,
+  const DeviceMppi config, const DeviceRefinement refinement)
+{
+  const bool valid = final_metrics->safe != 0U &&
+    isfinite(final_metrics->cost) && isfinite(final_metrics->merit) &&
+    final_metrics->merit <= initial_metrics->merit &&
+    final_metrics->maximum_dynamics_residual <= refinement.constraint_tolerance;
+  if (blockIdx.x == 0U && threadIdx.x == 0U) {
+    *accepted = valid ? 1U : 0U;
+  }
+  if (!valid) {
+    return;
+  }
+  const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (index <= config.horizon) {
+    expected[index] = refined_states[index];
+  }
+  if (index < config.horizon) {
+    updated[index] = refined_controls[index];
+  }
+}
+
 __global__ void ShiftNominal(
   const Control * updated, Control * nominal, const float shift_fraction,
   const DeviceMppi config)
@@ -1272,6 +1951,16 @@ class CudaMppiController::Impl {
       throw std::invalid_argument(
         "TensorRT neural dynamics currently requires expected_trajectory=true");
     }
+    if (model_kind == ModelKind::kTensorRtNeuralDerivative &&
+      config_.refinement.enabled)
+    {
+      throw std::invalid_argument(
+        "MPC refinement currently requires analytic dynamics Jacobians; "
+        "disable mpc_refinement for the TensorRT model");
+    }
+    if (config_.refinement.enabled && config_.horizon > kMaximumRefinementHorizon) {
+      throw std::invalid_argument("MPC refinement horizon exceeds the CUDA PCG limit of 128");
+    }
     if (model_kind == ModelKind::kTensorRtNeuralDerivative) {
       neural_model_ = std::make_unique<TensorRtDerivativeModel>(neural_engine_path);
     }
@@ -1291,15 +1980,34 @@ class CudaMppiController::Impl {
     device_config_.model_kind = model_kind;
     device_config_.integrator_kind = integrator_kind;
     device_config_.frame = config_.frame;
+    device_refinement_.enabled = config_.refinement.enabled;
+    device_refinement_.sqp_iterations = config_.refinement.sqp_iterations;
+    device_refinement_.pcg_iterations = config_.refinement.pcg_iterations;
+    device_refinement_.pcg_tolerance = config_.refinement.pcg_tolerance;
+    device_refinement_.constraint_tolerance = config_.refinement.constraint_tolerance;
+    device_refinement_.finite_difference_relative_step =
+      config_.refinement.finite_difference_relative_step;
+    device_refinement_.hessian_regularization = config_.refinement.hessian_regularization;
+    device_refinement_.merit_constraint_penalty =
+      config_.refinement.merit_constraint_penalty;
+    device_refinement_.state_proximity_weight = config_.refinement.state_proximity_weight;
+    device_refinement_.control_proximity_weight = config_.refinement.control_proximity_weight;
+    device_refinement_.maximum_state_step = config_.refinement.maximum_state_step;
     for (std::size_t i = 0; i < kControlDim; ++i) {
       device_config_.sigma[i] = config_.sigma[i];
       device_config_.control_min[i] = config_.control_min[i];
       device_config_.control_max[i] = config_.control_max[i];
+      device_refinement_.maximum_control_step[i] =
+        config_.refinement.maximum_control_step[i];
+      device_refinement_.maximum_control_rate[i] =
+        config_.refinement.maximum_control_rate[i];
     }
 
     CheckCuda(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "cudaStreamCreate");
     CheckCuda(cudaEventCreate(&start_event_), "cudaEventCreate start");
     CheckCuda(cudaEventCreate(&stop_event_), "cudaEventCreate stop");
+    CheckCuda(cudaEventCreate(&refinement_start_event_), "cudaEventCreate refinement start");
+    CheckCuda(cudaEventCreate(&refinement_stop_event_), "cudaEventCreate refinement stop");
     const std::size_t samples = config_.num_samples;
     const std::size_t horizon = config_.horizon;
     Allocate(random_states_, samples);
@@ -1331,6 +2039,40 @@ class CudaMppiController::Impl {
     Allocate(sigma_partials_, kSigmaBlocks * kControlDim * 2U);
     Allocate(finite_flags_, samples);
     Allocate(finite_count_, 1U);
+    if (config_.refinement.enabled) {
+      const std::size_t state_count = horizon + 1U;
+      const std::size_t multiplier_count = state_count * kStateDim;
+      Allocate(refinement_states_, state_count);
+      Allocate(refinement_controls_, horizon);
+      Allocate(refinement_anchor_states_, state_count);
+      Allocate(refinement_anchor_controls_, horizon);
+      Allocate(refinement_dynamics_a_, horizon * kStateDim * kStateDim);
+      Allocate(refinement_dynamics_b_, horizon * kStateDim * kControlDim);
+      Allocate(refinement_defects_, horizon);
+      Allocate(refinement_state_gradient_, state_count * kStateDim);
+      Allocate(refinement_state_inverse_hessian_, state_count * kStateDim);
+      Allocate(refinement_control_gradient_, horizon * kControlDim);
+      Allocate(refinement_control_inverse_hessian_, horizon * kControlDim);
+      Allocate(refinement_schur_diagonal_, state_count * kStateDim * kStateDim);
+      Allocate(refinement_schur_upper_, horizon * kStateDim * kStateDim);
+      Allocate(refinement_schur_inverse_diagonal_, state_count * kStateDim * kStateDim);
+      Allocate(refinement_rhs_, multiplier_count);
+      Allocate(refinement_dual_, multiplier_count);
+      Allocate(refinement_state_step_, state_count);
+      Allocate(refinement_control_step_, horizon);
+      Allocate(refinement_candidate_states_, kLineSearchCandidates * state_count);
+      Allocate(refinement_candidate_controls_, kLineSearchCandidates * horizon);
+      Allocate(refinement_metrics_, kLineSearchCandidates);
+      Allocate(refinement_original_metrics_, 1U);
+      Allocate(refinement_initial_metrics_, 1U);
+      Allocate(refinement_final_metrics_, 1U);
+      Allocate(refinement_selected_, 1U);
+      Allocate(refinement_accepted_, 1U);
+      Allocate(refinement_pcg_iterations_, 1U);
+      CheckCuda(cudaMemsetAsync(
+        refinement_dual_, 0, multiplier_count * sizeof(float), stream_),
+        "zero MPC refinement dual warm start");
+    }
     if (model_kind == ModelKind::kTensorRtNeuralDerivative) {
       Allocate(neural_states_, samples);
       Allocate(neural_input_, samples * TensorRtDerivativeModel::kInputWidth);
@@ -1462,6 +2204,33 @@ class CudaMppiController::Impl {
     Free(sigma_partials_);
     Free(finite_flags_);
     Free(finite_count_);
+    Free(refinement_states_);
+    Free(refinement_controls_);
+    Free(refinement_anchor_states_);
+    Free(refinement_anchor_controls_);
+    Free(refinement_dynamics_a_);
+    Free(refinement_dynamics_b_);
+    Free(refinement_defects_);
+    Free(refinement_state_gradient_);
+    Free(refinement_state_inverse_hessian_);
+    Free(refinement_control_gradient_);
+    Free(refinement_control_inverse_hessian_);
+    Free(refinement_schur_diagonal_);
+    Free(refinement_schur_upper_);
+    Free(refinement_schur_inverse_diagonal_);
+    Free(refinement_rhs_);
+    Free(refinement_dual_);
+    Free(refinement_state_step_);
+    Free(refinement_control_step_);
+    Free(refinement_candidate_states_);
+    Free(refinement_candidate_controls_);
+    Free(refinement_metrics_);
+    Free(refinement_original_metrics_);
+    Free(refinement_initial_metrics_);
+    Free(refinement_final_metrics_);
+    Free(refinement_selected_);
+    Free(refinement_accepted_);
+    Free(refinement_pcg_iterations_);
     Free(neural_states_);
     Free(neural_input_);
     Free(neural_derivative_);
@@ -1477,6 +2246,12 @@ class CudaMppiController::Impl {
     }
     if (stop_event_ != nullptr) {
       cudaEventDestroy(stop_event_);
+    }
+    if (refinement_start_event_ != nullptr) {
+      cudaEventDestroy(refinement_start_event_);
+    }
+    if (refinement_stop_event_ != nullptr) {
+      cudaEventDestroy(refinement_stop_event_);
     }
     if (stream_ != nullptr) {
       cudaStreamDestroy(stream_);
@@ -1612,6 +2387,92 @@ class CudaMppiController::Impl {
       weights_device_, perturbations_, sigma_partials_, device_config_);
     SigmaFinalize<<<1, 32, 0, stream_>>>(
       sigma_partials_, sigma_hat_, device_config_);
+    if (config_.refinement.enabled) {
+      CheckCuda(cudaEventRecord(refinement_start_event_, stream_),
+        "record MPC refinement start");
+      CheckCuda(cudaMemcpyAsync(
+        refinement_states_, expected_, (horizon + 1U) * sizeof(State),
+        cudaMemcpyDeviceToDevice, stream_), "warm start MPC states from MPPI expectation");
+      CheckCuda(cudaMemcpyAsync(
+        refinement_controls_, updated_, horizon * sizeof(Control),
+        cudaMemcpyDeviceToDevice, stream_), "warm start MPC controls from MPPI mean");
+      CheckCuda(cudaMemcpyAsync(
+        refinement_anchor_states_, expected_, (horizon + 1U) * sizeof(State),
+        cudaMemcpyDeviceToDevice, stream_), "snapshot MPC state anchor");
+      CheckCuda(cudaMemcpyAsync(
+        refinement_anchor_controls_, updated_, horizon * sizeof(Control),
+        cudaMemcpyDeviceToDevice, stream_), "snapshot MPC control anchor");
+      if (reset) {
+        CheckCuda(cudaMemsetAsync(
+          refinement_dual_, 0, (horizon + 1U) * kStateDim * sizeof(float), stream_),
+          "reset MPC dual warm start");
+      }
+      const std::size_t derivative_values = std::max(
+        (horizon + 1U) * kStateDim, horizon * kControlDim);
+      const int derivative_blocks = static_cast<int>((derivative_values + 255U) / 256U);
+      const std::size_t trajectory_values = horizon + 1U;
+      const int trajectory_blocks = static_cast<int>((trajectory_values + 255U) / 256U);
+      const std::size_t multiplier_count = (horizon + 1U) * kStateDim;
+      const std::size_t pcg_shared_bytes =
+        (5U * multiplier_count + kRefinementThreads) * sizeof(float);
+      for (std::uint16_t iteration = 0U;
+        iteration < config_.refinement.sqp_iterations; ++iteration)
+      {
+        LinearizeRefinementDynamics<<<static_cast<int>(horizon), 32, 0, stream_>>>(
+          refinement_states_, refinement_controls_, refinement_dynamics_a_,
+          refinement_dynamics_b_, refinement_defects_, track_, device_config_,
+          device_refinement_, vehicle_);
+        QuadraticizeRefinementCost<<<derivative_blocks, 256, 0, stream_>>>(
+          refinement_states_, refinement_controls_, refinement_anchor_states_,
+          refinement_anchor_controls_, previous_control,
+          refinement_state_gradient_, refinement_state_inverse_hessian_,
+          refinement_control_gradient_, refinement_control_inverse_hessian_,
+          initial_path_s_m, track_, device_reference, obstacle_field_, device_config_,
+          costs_, device_refinement_);
+        BuildRefinementSchur<<<static_cast<int>(horizon + 1U), 1, 0, stream_>>>(
+          refinement_dynamics_a_, refinement_dynamics_b_, refinement_defects_,
+          refinement_state_gradient_, refinement_state_inverse_hessian_,
+          refinement_control_gradient_, refinement_control_inverse_hessian_,
+          refinement_schur_diagonal_, refinement_schur_upper_,
+          refinement_schur_inverse_diagonal_, refinement_rhs_, device_config_,
+          device_refinement_);
+        SolveRefinementPcg<<<1, kRefinementThreads, pcg_shared_bytes, stream_>>>(
+          refinement_schur_diagonal_, refinement_schur_upper_,
+          refinement_schur_inverse_diagonal_, refinement_rhs_, refinement_dual_,
+          refinement_pcg_iterations_, device_config_, device_refinement_);
+        RecoverRefinementStep<<<derivative_blocks, 256, 0, stream_>>>(
+          refinement_dynamics_a_, refinement_dynamics_b_,
+          refinement_state_gradient_, refinement_state_inverse_hessian_,
+          refinement_control_gradient_, refinement_control_inverse_hessian_,
+          refinement_dual_, refinement_state_step_, refinement_control_step_,
+          device_config_, device_refinement_);
+        EvaluateRefinementLineSearch<<<kLineSearchCandidates, 1, 0, stream_>>>(
+          initial_state, initial_path_s_m, previous_control, refinement_states_,
+          refinement_controls_, refinement_control_step_,
+          refinement_anchor_states_, refinement_anchor_controls_,
+          refinement_candidate_states_, refinement_candidate_controls_,
+          refinement_metrics_, track_, device_reference, obstacle_field_,
+          device_config_, costs_, device_refinement_, vehicle_);
+        SelectRefinementLineSearch<<<1, 1, 0, stream_>>>(
+          refinement_metrics_, refinement_selected_, refinement_initial_metrics_,
+          refinement_final_metrics_);
+        if (iteration == 0U) {
+          CheckCuda(cudaMemcpyAsync(
+            refinement_original_metrics_, refinement_initial_metrics_,
+            sizeof(RefinementMetrics), cudaMemcpyDeviceToDevice, stream_),
+            "snapshot initial MPC refinement metrics");
+        }
+        ApplyRefinementLineSearch<<<trajectory_blocks, 256, 0, stream_>>>(
+          refinement_states_, refinement_controls_, refinement_candidate_states_,
+          refinement_candidate_controls_, refinement_selected_, device_config_);
+      }
+      CommitRefinement<<<trajectory_blocks, 256, 0, stream_>>>(
+        refinement_states_, refinement_controls_, expected_, updated_,
+        refinement_original_metrics_, refinement_final_metrics_,
+        refinement_accepted_, device_config_, device_refinement_);
+      CheckCuda(cudaEventRecord(refinement_stop_event_, stream_),
+        "record MPC refinement stop");
+    }
     if (capture_cost_terms) {
       // ShiftNominal overwrites nominal_ in place, and the breakdown runs after
       // the solve has been measured, so the mean the candidates were drawn
@@ -1631,6 +2492,11 @@ class CudaMppiController::Impl {
     float minimum = 0.0F;
     float ess = 0.0F;
     std::uint32_t finite_count = 0U;
+    std::uint8_t refinement_accepted = 0U;
+    std::uint16_t refinement_pcg_iterations = 0U;
+    RefinementMetrics refinement_initial_metrics{};
+    RefinementMetrics refinement_final_metrics{};
+    std::array<RefinementMetrics, kLineSearchCandidates> refinement_trial_metrics{};
     CheckCuda(cudaMemcpyAsync(
       solution.controls.data(), updated_, horizon * sizeof(Control),
       cudaMemcpyDeviceToHost, stream_), "copy updated controls");
@@ -1646,10 +2512,36 @@ class CudaMppiController::Impl {
     CheckCuda(cudaMemcpyAsync(
       &finite_count, finite_count_, sizeof(std::uint32_t),
       cudaMemcpyDeviceToHost, stream_), "copy finite rollout count");
+    if (config_.refinement.enabled) {
+      CheckCuda(cudaMemcpyAsync(
+        &refinement_accepted, refinement_accepted_, sizeof(std::uint8_t),
+        cudaMemcpyDeviceToHost, stream_), "copy MPC refinement acceptance");
+      CheckCuda(cudaMemcpyAsync(
+        &refinement_pcg_iterations, refinement_pcg_iterations_, sizeof(std::uint16_t),
+        cudaMemcpyDeviceToHost, stream_), "copy MPC refinement PCG iterations");
+      CheckCuda(cudaMemcpyAsync(
+        &refinement_initial_metrics, refinement_original_metrics_,
+        sizeof(RefinementMetrics), cudaMemcpyDeviceToHost, stream_),
+        "copy initial MPC refinement metrics");
+      CheckCuda(cudaMemcpyAsync(
+        &refinement_final_metrics, refinement_final_metrics_,
+        sizeof(RefinementMetrics), cudaMemcpyDeviceToHost, stream_),
+        "copy final MPC refinement metrics");
+      CheckCuda(cudaMemcpyAsync(
+        refinement_trial_metrics.data(), refinement_metrics_,
+        refinement_trial_metrics.size() * sizeof(RefinementMetrics),
+        cudaMemcpyDeviceToHost, stream_), "copy MPC refinement line-search metrics");
+    }
     CheckCuda(cudaEventRecord(stop_event_, stream_), "record MPPI stop");
     CheckCuda(cudaEventSynchronize(stop_event_), "wait for MPPI solve");
     float elapsed_ms = 0.0F;
     CheckCuda(cudaEventElapsedTime(&elapsed_ms, start_event_, stop_event_), "measure MPPI solve");
+    float refinement_elapsed_ms = 0.0F;
+    if (config_.refinement.enabled) {
+      CheckCuda(cudaEventElapsedTime(
+        &refinement_elapsed_ms, refinement_start_event_, refinement_stop_event_),
+        "measure MPC refinement");
+    }
 
     // Visualization is intentionally sampled only when requested by the ROS
     // runtime. The control solve has completed at this point, so these optional
@@ -1712,6 +2604,24 @@ class CudaMppiController::Impl {
     solution.diagnostics.sigma_used = config_.sigma;
     solution.diagnostics.solve_time_ms = elapsed_ms;
     solution.diagnostics.finite_rollouts = finite_count;
+    solution.diagnostics.refinement_attempted = config_.refinement.enabled;
+    solution.diagnostics.refinement_accepted = refinement_accepted != 0U;
+    solution.diagnostics.refinement_iterations = config_.refinement.enabled ?
+      config_.refinement.sqp_iterations : 0U;
+    solution.diagnostics.refinement_pcg_iterations = refinement_pcg_iterations;
+    solution.diagnostics.refinement_time_ms = refinement_elapsed_ms;
+    solution.diagnostics.refinement_cost_before = refinement_initial_metrics.cost;
+    solution.diagnostics.refinement_cost_after = refinement_final_metrics.cost;
+    solution.diagnostics.refinement_constraint_residual_before =
+      refinement_initial_metrics.maximum_dynamics_residual;
+    solution.diagnostics.refinement_constraint_residual =
+      refinement_final_metrics.maximum_dynamics_residual;
+    for (std::size_t candidate = 0U; candidate < kLineSearchCandidates; ++candidate) {
+      solution.diagnostics.refinement_trial_merits[candidate] =
+        refinement_trial_metrics[candidate].merit;
+      solution.diagnostics.refinement_trial_constraint_residuals[candidate] =
+        refinement_trial_metrics[candidate].maximum_dynamics_residual;
+    }
 
     if (config_.adaptation.adaptive_lambda) {
       if (ess < config_.adaptation.ess_fraction_min * config_.num_samples) {
@@ -1772,10 +2682,13 @@ class CudaMppiController::Impl {
   ObstacleConfig obstacle_config_;
   DeviceCosts costs_{};
   DeviceMppi device_config_{};
+  DeviceRefinement device_refinement_{};
   std::array<float, kControlDim> base_sigma_{};
   cudaStream_t stream_{nullptr};
   cudaEvent_t start_event_{nullptr};
   cudaEvent_t stop_event_{nullptr};
+  cudaEvent_t refinement_start_event_{nullptr};
+  cudaEvent_t refinement_stop_event_{nullptr};
   curandStatePhilox4_32_10_t * random_states_{nullptr};
   float * raw_noise_{nullptr};
   Control * candidates_{nullptr};
@@ -1816,6 +2729,33 @@ class CudaMppiController::Impl {
   float * sigma_partials_{nullptr};
   std::uint32_t * finite_flags_{nullptr};
   std::uint32_t * finite_count_{nullptr};
+  State * refinement_states_{nullptr};
+  Control * refinement_controls_{nullptr};
+  State * refinement_anchor_states_{nullptr};
+  Control * refinement_anchor_controls_{nullptr};
+  float * refinement_dynamics_a_{nullptr};
+  float * refinement_dynamics_b_{nullptr};
+  State * refinement_defects_{nullptr};
+  float * refinement_state_gradient_{nullptr};
+  float * refinement_state_inverse_hessian_{nullptr};
+  float * refinement_control_gradient_{nullptr};
+  float * refinement_control_inverse_hessian_{nullptr};
+  float * refinement_schur_diagonal_{nullptr};
+  float * refinement_schur_upper_{nullptr};
+  float * refinement_schur_inverse_diagonal_{nullptr};
+  float * refinement_rhs_{nullptr};
+  float * refinement_dual_{nullptr};
+  State * refinement_state_step_{nullptr};
+  Control * refinement_control_step_{nullptr};
+  State * refinement_candidate_states_{nullptr};
+  Control * refinement_candidate_controls_{nullptr};
+  RefinementMetrics * refinement_metrics_{nullptr};
+  RefinementMetrics * refinement_original_metrics_{nullptr};
+  RefinementMetrics * refinement_initial_metrics_{nullptr};
+  RefinementMetrics * refinement_final_metrics_{nullptr};
+  std::uint32_t * refinement_selected_{nullptr};
+  std::uint8_t * refinement_accepted_{nullptr};
+  std::uint16_t * refinement_pcg_iterations_{nullptr};
   State * neural_states_{nullptr};
   float * neural_input_{nullptr};
   float * neural_derivative_{nullptr};

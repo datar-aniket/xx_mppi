@@ -14,6 +14,7 @@ constexpr std::size_t kBodyStateDim = 4;
 constexpr std::size_t kFrameStateDim = 3;
 constexpr std::size_t kStateDim = kBodyStateDim + kFrameStateDim;
 constexpr std::size_t kControlDim = 3;
+constexpr std::size_t kMpcLineSearchCandidates = 7;
 
 enum BodyIndex : std::size_t {
   kYawRate = 0,
@@ -113,6 +114,26 @@ struct AdaptationConfig {
   float steering_minimum_scale{0.2F};
 };
 
+// Local multiple-shooting SQP pass applied once to the control/state mean
+// produced by MPPI.  MPPI remains the global optimizer; this pass improves the
+// dynamically coupled trajectory and command smoothness before the sequence is
+// shifted into the next warm start.
+struct MpcRefinementConfig {
+  bool enabled{false};
+  std::uint16_t sqp_iterations{3};
+  std::uint16_t pcg_iterations{48};
+  float pcg_tolerance{1.0e-4F};
+  float constraint_tolerance{2.0e-2F};
+  float finite_difference_relative_step{1.0e-3F};
+  float hessian_regularization{1.0e-3F};
+  float merit_constraint_penalty{1.0e4F};
+  float state_proximity_weight{1.0e-2F};
+  float control_proximity_weight{1.0F};
+  float maximum_state_step{5.0F};
+  std::array<float, kControlDim> maximum_control_step{0.10F, 0.25F, 0.10F};
+  std::array<float, kControlDim> maximum_control_rate{4.0F, 10.0F, 4.0F};
+};
+
 struct MppiConfig {
   std::uint32_t num_samples{2001};
   std::uint16_t horizon{50};
@@ -134,6 +155,7 @@ struct MppiConfig {
   std::uint64_t seed{0};
   FrameKind frame{FrameKind::kFrenet};
   AdaptationConfig adaptation{};
+  MpcRefinementConfig refinement{};
 };
 
 struct CostWeights {
@@ -313,6 +335,17 @@ struct MppiDiagnostics {
   std::array<float, kControlDim> sigma_used{};
   float solve_time_ms{};
   std::uint32_t finite_rollouts{};
+  bool refinement_attempted{};
+  bool refinement_accepted{};
+  std::uint16_t refinement_iterations{};
+  std::uint16_t refinement_pcg_iterations{};
+  float refinement_time_ms{};
+  float refinement_cost_before{std::numeric_limits<float>::infinity()};
+  float refinement_cost_after{std::numeric_limits<float>::infinity()};
+  float refinement_constraint_residual_before{std::numeric_limits<float>::infinity()};
+  float refinement_constraint_residual{std::numeric_limits<float>::infinity()};
+  std::array<float, kMpcLineSearchCandidates> refinement_trial_merits{};
+  std::array<float, kMpcLineSearchCandidates> refinement_trial_constraint_residuals{};
   // Present only on solves the ROS runtime asked to decompose, which it does at
   // its own reduced rate. Measured on the published (expected) trajectory.
   std::optional<CostTerms> cost_terms{};

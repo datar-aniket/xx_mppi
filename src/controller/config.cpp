@@ -270,6 +270,55 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   config.mppi.adaptation.steering_minimum_scale = GetOr(
     adaptation, "steering_minimum_scale", config.mppi.adaptation.steering_minimum_scale);
 
+  const auto refinement = mppi_yaml["mpc_refinement"];
+  config.mppi.refinement.enabled = GetOr(
+    refinement, "enabled", config.mppi.refinement.enabled);
+  config.mppi.refinement.sqp_iterations = GetOr(
+    refinement, "sqp_iterations", config.mppi.refinement.sqp_iterations);
+  config.mppi.refinement.pcg_iterations = GetOr(
+    refinement, "pcg_iterations", config.mppi.refinement.pcg_iterations);
+  config.mppi.refinement.pcg_tolerance = GetOr(
+    refinement, "pcg_tolerance", config.mppi.refinement.pcg_tolerance);
+  config.mppi.refinement.constraint_tolerance = GetOr(
+    refinement, "constraint_tolerance", config.mppi.refinement.constraint_tolerance);
+  config.mppi.refinement.finite_difference_relative_step = GetOr(
+    refinement, "finite_difference_relative_step",
+    config.mppi.refinement.finite_difference_relative_step);
+  config.mppi.refinement.hessian_regularization = GetOr(
+    refinement, "hessian_regularization", config.mppi.refinement.hessian_regularization);
+  config.mppi.refinement.merit_constraint_penalty = GetOr(
+    refinement, "merit_constraint_penalty",
+    config.mppi.refinement.merit_constraint_penalty);
+  config.mppi.refinement.state_proximity_weight = GetOr(
+    refinement, "state_proximity_weight", config.mppi.refinement.state_proximity_weight);
+  config.mppi.refinement.control_proximity_weight = GetOr(
+    refinement, "control_proximity_weight",
+    config.mppi.refinement.control_proximity_weight);
+  config.mppi.refinement.maximum_state_step = GetOr(
+    refinement, "maximum_state_step", config.mppi.refinement.maximum_state_step);
+  const auto maximum_control_step = refinement ?
+    refinement["maximum_control_step"] : YAML::Node{};
+  config.mppi.refinement.maximum_control_step[kSteering] = GetOr(
+    maximum_control_step, "steering_angle_rad",
+    config.mppi.refinement.maximum_control_step[kSteering]);
+  config.mppi.refinement.maximum_control_step[kWheelTorque] = GetOr(
+    maximum_control_step, "wheel_torque_nm",
+    config.mppi.refinement.maximum_control_step[kWheelTorque]);
+  config.mppi.refinement.maximum_control_step[kRearSteering] = GetOr(
+    maximum_control_step, "rear_steering_angle_rad",
+    config.mppi.refinement.maximum_control_step[kRearSteering]);
+  const auto maximum_control_rate = refinement ?
+    refinement["maximum_control_rate"] : YAML::Node{};
+  config.mppi.refinement.maximum_control_rate[kSteering] = GetOr(
+    maximum_control_rate, "steering_velocity_radps",
+    config.mppi.refinement.maximum_control_rate[kSteering]);
+  config.mppi.refinement.maximum_control_rate[kWheelTorque] = GetOr(
+    maximum_control_rate, "wheel_torque_rate_nmps",
+    config.mppi.refinement.maximum_control_rate[kWheelTorque]);
+  config.mppi.refinement.maximum_control_rate[kRearSteering] = GetOr(
+    maximum_control_rate, "rear_steering_velocity_radps",
+    config.mppi.refinement.maximum_control_rate[kRearSteering]);
+
   const std::string frame = GetOr(mppi_yaml, "frame", std::string("frenet"));
   if (frame == "frenet") {
     config.mppi.frame = FrameKind::kFrenet;
@@ -415,11 +464,29 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   if (config.mppi.control_delay_steps >= config.mppi.horizon) {
     throw std::runtime_error("control_delay_steps must be less than horizon");
   }
+  const auto & refinement_config = config.mppi.refinement;
+  if (refinement_config.enabled &&
+    (refinement_config.sqp_iterations == 0U || refinement_config.pcg_iterations == 0U ||
+    !(refinement_config.pcg_tolerance > 0.0F) ||
+    !(refinement_config.constraint_tolerance > 0.0F) ||
+    !(refinement_config.finite_difference_relative_step > 0.0F) ||
+    !(refinement_config.hessian_regularization > 0.0F) ||
+    !(refinement_config.merit_constraint_penalty > 0.0F) ||
+    refinement_config.state_proximity_weight < 0.0F ||
+    refinement_config.control_proximity_weight < 0.0F ||
+    !(refinement_config.maximum_state_step > 0.0F)))
+  {
+    throw std::runtime_error("invalid MPC refinement configuration");
+  }
   for (std::size_t i = 0; i < kControlDim; ++i) {
     if (!std::isfinite(config.mppi.control_min[i]) ||
       !std::isfinite(config.mppi.control_max[i]) ||
       !std::isfinite(config.mppi.sigma[i]) ||
-      !std::isfinite(config.costs.control_rate[i]) || config.costs.control_rate[i] < 0.0F)
+      !std::isfinite(config.costs.control_rate[i]) || config.costs.control_rate[i] < 0.0F ||
+      !std::isfinite(refinement_config.maximum_control_step[i]) ||
+      !std::isfinite(refinement_config.maximum_control_rate[i]) ||
+      refinement_config.maximum_control_step[i] < 0.0F ||
+      refinement_config.maximum_control_rate[i] < 0.0F)
     {
       throw std::runtime_error("invalid control bounds or sampling sigma");
     }

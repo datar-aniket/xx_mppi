@@ -92,3 +92,29 @@ adaptation:
   speed_scaled_steering: true
   steering_reference_speed_mps: 3.0
   steering_minimum_scale: 0.2
+
+# One native CUDA multiple-shooting SQP pass refines the MPPI weighted mean.
+# The MPPI expected states are intentionally accepted as an infeasible primal
+# warm start; dynamics defects are equality residuals removed by SQP. If the
+# final residual or the existing safety checks fail, the unrefined MPPI result
+# remains the command and warm start.
+mpc_refinement:
+  enabled: true
+  sqp_iterations: 3
+  pcg_iterations: 48
+  pcg_tolerance: 1.0e-4
+  constraint_tolerance: 0.02
+  finite_difference_relative_step: 1.0e-3
+  hessian_regularization: 1.0e-3
+  merit_constraint_penalty: 10000.0
+  state_proximity_weight: 0.01
+  control_proximity_weight: 1.0
+  maximum_state_step: 5.0
+  maximum_control_step:
+    steering_angle_rad: 0.10
+    wheel_torque_nm: 0.25
+    rear_steering_angle_rad: 0.10
+  maximum_control_rate:
+    steering_velocity_radps: 4.0
+    wheel_torque_rate_nmps: 10.0
+    rear_steering_velocity_radps: 4.0

@@ -112,6 +112,24 @@ warm-start/reference/braking special samples, clips in physical units, rolls out
 all samples, and computes robust softmax weights. Non-finite rollouts are assigned
 the worst finite cost; an all-invalid population falls back to uniform weights.
 
+When `mpc_refinement.enabled` is true, the weighted MPPI controls and expected
+states become the primal warm start for one native CUDA multiple-shooting SQP
+pass. The expected states are not rerolled first: their mismatch with the
+weighted controls enters the QP as a dynamics equality residual. Central finite
+differences linearize the analytic vehicle dynamics and state costs, a positive
+diagonal Hessian approximation produces a block-tridiagonal Schur complement,
+and a block-Jacobi PCG solve recovers the control step. Box and rate constraints
+are projected during a seven-candidate parallel line search. Each nonzero trial
+then receives a nonlinear feasibility rollout, so an accepted result satisfies
+the actual dynamics rather than only their local linearization. Safety checks,
+merit decrease, and the configured final residual tolerance gate acceptance;
+rejection preserves the original MPPI command. An accepted control sequence is
+shifted into the next MPPI nominal, closing the sampling/refinement loop.
+
+Refinement currently supports analytic dynamics and horizons up to 128. The
+TensorRT model is rejected at startup when refinement is enabled because it
+does not yet expose dynamics Jacobians.
+
 The ROS runtime owns independent solver, command-publication, terminal-info,
 visualization, and obstacle workers. The ROS EKF callback only validates and
 replaces a latest-state mailbox, so projection or CUDA work cannot hold up new

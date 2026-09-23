@@ -239,6 +239,20 @@ void MppiRosRuntime::PublishInfo(
     static_cast<double>(diagnostics.effective_sample_size),
     static_cast<unsigned>(diagnostics.finite_rollouts), publication_age_ms,
     solution_age_ms);
+  if (diagnostics.refinement_attempted) {
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "MPC refinement: accepted=%s time=%.3f ms SQP=%u PCG=%u cost=%.6g->%.6g "
+      "dynamics_residual=%.6g->%.6g",
+      diagnostics.refinement_accepted ? "true" : "false",
+      static_cast<double>(diagnostics.refinement_time_ms),
+      static_cast<unsigned>(diagnostics.refinement_iterations),
+      static_cast<unsigned>(diagnostics.refinement_pcg_iterations),
+      static_cast<double>(diagnostics.refinement_cost_before),
+      static_cast<double>(diagnostics.refinement_cost_after),
+      static_cast<double>(diagnostics.refinement_constraint_residual_before),
+      static_cast<double>(diagnostics.refinement_constraint_residual));
+  }
   if (diagnostics.cost_terms) {
     // The single largest positive term, which is the one question the summed
     // cost above can never answer.

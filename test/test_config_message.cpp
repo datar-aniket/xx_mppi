@@ -34,6 +34,13 @@ TEST(Config, LoadsRuntimeProblemAndPhysicalControlBounds) {
   EXPECT_GE(config.costs.longitudinal_deceleration, 0.0F);
   EXPECT_GE(config.costs.control_rate[kSteering], 0.0F);
   EXPECT_GE(config.costs.control_rate[kWheelTorque], 0.0F);
+  EXPECT_TRUE(config.mppi.refinement.enabled);
+  EXPECT_GT(config.mppi.refinement.sqp_iterations, 0U);
+  EXPECT_GT(config.mppi.refinement.pcg_iterations, 0U);
+  EXPECT_GT(config.mppi.refinement.constraint_tolerance, 0.0F);
+  EXPECT_GT(config.mppi.refinement.merit_constraint_penalty, 0.0F);
+  EXPECT_GT(config.mppi.refinement.maximum_control_rate[kSteering], 0.0F);
+  EXPECT_GT(config.mppi.refinement.maximum_control_rate[kWheelTorque], 0.0F);
   EXPECT_GT(config.info_log_rate_hz, 0.0F);
   EXPECT_GT(config.obstacles.confirmation_updates, 0U);
   EXPECT_GE(
