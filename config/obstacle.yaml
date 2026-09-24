@@ -29,6 +29,6 @@ latch_threshold_m: 0.05
 latching_weight: 80000.0
 
 # Traxxas TRX-4 Sport bounding box represented conservatively by three circles.
-footprint_length_m: 0.50
-footprint_width_m: 0.3
+footprint_length_m: 0.60
+footprint_width_m: 0.4
 footprint_circles: 3

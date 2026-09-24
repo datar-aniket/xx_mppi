@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -154,6 +155,14 @@ struct RefinementMetrics {
   float merit;
   float maximum_dynamics_residual;
   std::uint8_t safe;
+};
+
+struct RefinementDelta {
+  float state_rms[kStateDim];
+  float state_max[kStateDim];
+  float control_rms[kControlDim];
+  float control_max[kControlDim];
+  float first_control[kControlDim];
 };
 
 __device__ float WrapTrackS(float s, const DeviceTrack & track) {
@@ -1139,21 +1148,40 @@ __global__ void SigmaPartials(
     }
   }
 
-  __shared__ float scratch[kSigmaThreads];
+  // Reduce all channel/statistic pairs together.  The former shared-memory
+  // tree performed six full block reductions for 3 controls x 2 statistics,
+  // including 54 block-wide barriers.  Warp shuffles need one barrier total
+  // and retain the same fixed per-block partitioning used by SigmaFinalize.
+  constexpr std::uint32_t kWarpSize = 32U;
+  constexpr std::uint32_t kWarpCount = kSigmaThreads / kWarpSize;
+  __shared__ float warp_sums[kWarpCount][kControlDim][2U];
+  const std::uint32_t lane = threadIdx.x % kWarpSize;
+  const std::uint32_t warp = threadIdx.x / kWarpSize;
   for (std::size_t channel = 0; channel < kControlDim; ++channel) {
-    for (std::size_t half = 0; half < 2U; ++half) {
-      scratch[threadIdx.x] = half == 0U ? weighted[channel] : unweighted[channel];
-      __syncthreads();
-      for (std::uint32_t span = kSigmaThreads / 2U; span > 0U; span >>= 1U) {
-        if (threadIdx.x < span) {
-          scratch[threadIdx.x] += scratch[threadIdx.x + span];
-        }
-        __syncthreads();
+    for (std::uint32_t offset = kWarpSize / 2U; offset > 0U; offset >>= 1U) {
+      weighted[channel] += __shfl_down_sync(0xffffffffU, weighted[channel], offset);
+      unweighted[channel] += __shfl_down_sync(0xffffffffU, unweighted[channel], offset);
+    }
+    if (lane == 0U) {
+      warp_sums[warp][channel][0U] = weighted[channel];
+      warp_sums[warp][channel][1U] = unweighted[channel];
+    }
+  }
+  __syncthreads();
+
+  if (warp == 0U) {
+    for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+      float block_weighted = lane < kWarpCount ? warp_sums[lane][channel][0U] : 0.0F;
+      float block_unweighted = lane < kWarpCount ? warp_sums[lane][channel][1U] : 0.0F;
+      for (std::uint32_t offset = kWarpSize / 2U; offset > 0U; offset >>= 1U) {
+        block_weighted += __shfl_down_sync(0xffffffffU, block_weighted, offset);
+        block_unweighted += __shfl_down_sync(0xffffffffU, block_unweighted, offset);
       }
-      if (threadIdx.x == 0U) {
-        partials[(blockIdx.x * kControlDim + channel) * 2U + half] = scratch[0];
+      if (lane == 0U) {
+        const std::size_t base = (blockIdx.x * kControlDim + channel) * 2U;
+        partials[base] = block_weighted;
+        partials[base + 1U] = block_unweighted;
       }
-      __syncthreads();
     }
   }
 }
@@ -1217,10 +1245,14 @@ __device__ float RefinementStateCost(
 
 __global__ void LinearizeRefinementDynamics(
   const State * states, const Control * controls, float * dynamics_a,
-  float * dynamics_b, State * defects, const DeviceTrack track,
+  float * dynamics_b, State * defects, const std::uint8_t * active,
+  const DeviceTrack track,
   const DeviceMppi config, const DeviceRefinement refinement,
   const VehicleParameters parameters)
 {
+  if (*active == 0U) {
+    return;
+  }
   const std::uint16_t time = static_cast<std::uint16_t>(blockIdx.x);
   if (time >= config.horizon) {
     return;
@@ -1276,11 +1308,15 @@ __global__ void QuadraticizeRefinementCost(
   const Control * anchor_controls, const Control previous_control,
   float * state_gradient, float * state_inverse_hessian,
   float * control_gradient, float * control_inverse_hessian,
+  const std::uint8_t * active,
   const float initial_path_s, const DeviceTrack track,
   const DeviceReference reference, const DeviceObstacleField obstacle_field,
   const DeviceMppi config, const DeviceCosts weights,
   const DeviceRefinement refinement)
 {
+  if (*active == 0U) {
+    return;
+  }
   const std::size_t flat = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t state_count = static_cast<std::size_t>(config.horizon + 1U) * kStateDim;
   if (flat < state_count) {
@@ -1391,8 +1427,12 @@ __global__ void BuildRefinementSchur(
   const float * state_gradient, const float * state_inverse_hessian,
   const float * control_gradient, const float * control_inverse_hessian,
   float * diagonal, float * upper, float * inverse_diagonal, float * rhs,
+  const std::uint8_t * active,
   const DeviceMppi config, const DeviceRefinement refinement)
 {
+  if (*active == 0U) {
+    return;
+  }
   const std::uint16_t row_index = static_cast<std::uint16_t>(blockIdx.x);
   if (row_index > config.horizon || threadIdx.x != 0U) {
     return;
@@ -1465,14 +1505,30 @@ __global__ void BuildRefinementSchur(
 }
 
 __device__ float RefinementBlockDot(float value, float * scratch) {
-  scratch[threadIdx.x] = value;
-  __syncthreads();
-  for (std::uint32_t span = blockDim.x / 2U; span > 0U; span >>= 1U) {
-    if (threadIdx.x < span) {
-      scratch[threadIdx.x] += scratch[threadIdx.x + span];
-    }
-    __syncthreads();
+  // Reduce within each warp first, then reduce the (at most eight) warp sums.
+  // The former tree reduction synchronized the full block eight times for each
+  // dot product, twice per PCG iteration. This needs only two block barriers.
+  constexpr std::uint32_t kWarpSize = 32U;
+  const std::uint32_t lane = threadIdx.x & (kWarpSize - 1U);
+  const std::uint32_t warp = threadIdx.x / kWarpSize;
+  for (std::uint32_t offset = kWarpSize / 2U; offset > 0U; offset >>= 1U) {
+    value += __shfl_down_sync(0xffffffffU, value, offset);
   }
+  if (lane == 0U) {
+    scratch[warp] = value;
+  }
+  __syncthreads();
+  if (warp == 0U) {
+    const std::uint32_t warp_count = (blockDim.x + kWarpSize - 1U) / kWarpSize;
+    value = lane < warp_count ? scratch[lane] : 0.0F;
+    for (std::uint32_t offset = kWarpSize / 2U; offset > 0U; offset >>= 1U) {
+      value += __shfl_down_sync(0xffffffffU, value, offset);
+    }
+    if (lane == 0U) {
+      scratch[0] = value;
+    }
+  }
+  __syncthreads();
   return scratch[0];
 }
 
@@ -1508,8 +1564,12 @@ __device__ float RefinementSchurEntry(
 __global__ void SolveRefinementPcg(
   const float * diagonal, const float * upper, const float * inverse_diagonal,
   const float * rhs, float * dual, std::uint16_t * iterations,
+  const std::uint8_t * active,
   const DeviceMppi config, const DeviceRefinement refinement)
 {
+  if (*active == 0U) {
+    return;
+  }
   extern __shared__ float shared[];
   const std::size_t count = static_cast<std::size_t>(config.horizon + 1U) * kStateDim;
   float * solution = shared;
@@ -1545,9 +1605,11 @@ __global__ void SolveRefinementPcg(
     partial += residual[index] * preconditioned[index];
   }
   float rz = RefinementBlockDot(partial, scratch);
+  const float convergence_threshold = 1.0e-12F +
+    refinement.pcg_tolerance * refinement.pcg_tolerance * fabsf(rz);
   std::uint16_t completed = 0U;
   for (std::uint16_t iteration = 0U; iteration < refinement.pcg_iterations; ++iteration) {
-    if (!isfinite(rz) || rz <= refinement.pcg_tolerance * refinement.pcg_tolerance) {
+    if (!isfinite(rz) || fabsf(rz) <= convergence_threshold) {
       break;
     }
     for (std::size_t index = threadIdx.x; index < count; index += blockDim.x) {
@@ -1607,8 +1669,12 @@ __global__ void RecoverRefinementStep(
   const float * state_gradient, const float * state_inverse_hessian,
   const float * control_gradient, const float * control_inverse_hessian,
   const float * dual, State * state_step, Control * control_step,
+  const std::uint8_t * active,
   const DeviceMppi config, const DeviceRefinement refinement)
 {
+  if (*active == 0U) {
+    return;
+  }
   const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t state_count = static_cast<std::size_t>(config.horizon + 1U) * kStateDim;
   if (index < state_count) {
@@ -1660,13 +1726,14 @@ __global__ void EvaluateRefinementLineSearch(
   const Control * control_step,
   const State * anchor_states, const Control * anchor_controls,
   State * candidate_states, Control * candidate_controls,
-  RefinementMetrics * metrics, const DeviceTrack track,
+  RefinementMetrics * metrics, const std::uint8_t * active,
+  const std::uint16_t sqp_iteration, const DeviceTrack track,
   const DeviceReference reference, const DeviceObstacleField obstacle_field,
   const DeviceMppi config, const DeviceCosts weights,
   const DeviceRefinement refinement, const VehicleParameters parameters)
 {
   const std::size_t candidate = blockIdx.x;
-  if (candidate >= kLineSearchCandidates || threadIdx.x != 0U) {
+  if (*active == 0U || candidate >= kLineSearchCandidates || threadIdx.x != 0U) {
     return;
   }
   const float alpha = RefinementAlpha(candidate);
@@ -1743,16 +1810,23 @@ __global__ void EvaluateRefinementLineSearch(
       cost += refinement.control_proximity_weight * anchor_difference * anchor_difference;
     }
     prior = control;
-    const State predicted = IntegrateAnalyticStep(
-      candidate_state[time], control, track, config, parameters);
     const float acceleration =
       (candidate_state[time + 1U][kSpeed] - candidate_state[time][kSpeed]) / config.dt;
     cost += (acceleration >= 0.0F ? weights.longitudinal_acceleration :
       weights.longitudinal_deceleration) * acceleration * acceleration;
-    for (std::size_t channel = 0; channel < kStateDim; ++channel) {
-      const float residual = fabsf(candidate_state[time + 1U][channel] - predicted[channel]);
-      residual_l1 += residual;
-      maximum_residual = fmaxf(maximum_residual, residual);
+    // Nonzero line-search candidates were generated immediately above by the
+    // exact same nonlinear integration, so their dynamics residual is exactly
+    // zero by construction.  Re-integrating all six feasible candidates here
+    // doubled the dominant work of each SQP line search.  Only candidate zero,
+    // whose multiple-shooting states may be infeasible, needs the residual.
+    if (candidate == 0U && sqp_iteration == 0U) {
+      const State predicted = IntegrateAnalyticStep(
+        candidate_state[time], control, track, config, parameters);
+      for (std::size_t channel = 0; channel < kStateDim; ++channel) {
+        const float residual = fabsf(candidate_state[time + 1U][channel] - predicted[channel]);
+        residual_l1 += residual;
+        maximum_residual = fmaxf(maximum_residual, residual);
+      }
     }
   }
   const FrenetView terminal_frenet = FrameView(
@@ -1777,28 +1851,47 @@ __global__ void EvaluateRefinementLineSearch(
 
 __global__ void SelectRefinementLineSearch(
   const RefinementMetrics * metrics, std::uint32_t * selected,
-  RefinementMetrics * initial_metrics, RefinementMetrics * final_metrics)
+  RefinementMetrics * initial_metrics, RefinementMetrics * final_metrics,
+  std::uint8_t * active, std::uint16_t * completed_iterations,
+  const std::uint16_t sqp_iteration)
 {
-  if (blockIdx.x != 0U || threadIdx.x != 0U) {
+  if (*active == 0U || blockIdx.x != 0U || threadIdx.x != 0U) {
     return;
   }
   *initial_metrics = metrics[0];
   std::uint32_t choice = 0U;
   for (std::uint32_t candidate = 1U; candidate < kLineSearchCandidates; ++candidate) {
-    if (metrics[candidate].merit < metrics[0].merit) {
+    // All trials have already been evaluated, so choose the lowest-merit safe
+    // trajectory rather than the first trial that happens to improve. The old
+    // backtracking-style choice accepted alpha=1 for any tiny decrease even
+    // when alpha=0.7 or 0.3 was substantially better, and it could advance the
+    // next SQP linearization through an unsafe intermediate trajectory.
+    if (metrics[candidate].safe != 0U &&
+      metrics[candidate].merit < metrics[choice].merit)
+    {
       choice = candidate;
-      break;
     }
   }
   *selected = choice;
   *final_metrics = metrics[choice];
+  *completed_iterations = static_cast<std::uint16_t>(sqp_iteration + 1U);
+  // A rejected step leaves the primal unchanged. Re-linearizing the identical
+  // point cannot improve it deterministically, so the remaining queued SQP
+  // kernels can return immediately instead of burning the configured maximum.
+  if (choice == 0U) {
+    *active = 0U;
+  }
 }
 
 __global__ void ApplyRefinementLineSearch(
   State * states, Control * controls, const State * candidate_states,
   const Control * candidate_controls, const std::uint32_t * selected,
+  const std::uint8_t * active,
   const DeviceMppi config)
 {
+  if (*active == 0U) {
+    return;
+  }
   const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t state_count = static_cast<std::size_t>(config.horizon + 1U);
   if (index < state_count) {
@@ -1834,6 +1927,49 @@ __global__ void CommitRefinement(
   if (index < config.horizon) {
     updated[index] = refined_controls[index];
   }
+}
+
+__global__ void MeasureRefinementDelta(
+  const State * anchor_states, const Control * anchor_controls,
+  const State * published_states, const Control * published_controls,
+  const std::uint8_t * accepted, RefinementDelta * delta,
+  const DeviceMppi config)
+{
+  if (blockIdx.x != 0U || threadIdx.x != 0U) {
+    return;
+  }
+  RefinementDelta result{};
+  if (*accepted != 0U) {
+    for (std::uint16_t time = 0U; time <= config.horizon; ++time) {
+      for (std::size_t channel = 0U; channel < kStateDim; ++channel) {
+        const float difference = fabsf(
+          published_states[time][channel] - anchor_states[time][channel]);
+        result.state_rms[channel] += difference * difference;
+        result.state_max[channel] = fmaxf(result.state_max[channel], difference);
+      }
+    }
+    for (std::uint16_t time = 0U; time < config.horizon; ++time) {
+      for (std::size_t channel = 0U; channel < kControlDim; ++channel) {
+        const float difference = fabsf(
+          published_controls[time][channel] - anchor_controls[time][channel]);
+        result.control_rms[channel] += difference * difference;
+        result.control_max[channel] = fmaxf(result.control_max[channel], difference);
+      }
+    }
+    for (std::size_t channel = 0U; channel < kControlDim; ++channel) {
+      result.first_control[channel] = fabsf(
+        published_controls[0][channel] - anchor_controls[0][channel]);
+    }
+    for (std::size_t channel = 0U; channel < kStateDim; ++channel) {
+      result.state_rms[channel] = sqrtf(
+        result.state_rms[channel] / static_cast<float>(config.horizon + 1U));
+    }
+    for (std::size_t channel = 0U; channel < kControlDim; ++channel) {
+      result.control_rms[channel] = sqrtf(
+        result.control_rms[channel] / static_cast<float>(config.horizon));
+    }
+  }
+  *delta = result;
 }
 
 __global__ void ShiftNominal(
@@ -1914,6 +2050,20 @@ DeviceCosts ToDeviceCosts(
 }  // namespace
 
 class CudaMppiController::Impl {
+ private:
+  enum class VisualizationSlotState : std::uint8_t {kFree, kReady, kReading};
+
+  struct VisualizationSlot {
+    float * weights{nullptr};
+    State * trajectories{nullptr};
+    cudaEvent_t ready_event{nullptr};
+    VisualizationSlotState state{VisualizationSlotState::kFree};
+    std::uint64_t id{};
+    std::uint32_t rollout_count{};
+  };
+
+  static constexpr std::size_t kVisualizationSlotCount = 2U;
+
  public:
   Impl(
     MppiConfig config, const CostWeights & costs, VehicleParameters vehicle,
@@ -2004,10 +2154,21 @@ class CudaMppiController::Impl {
     }
 
     CheckCuda(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "cudaStreamCreate");
+    CheckCuda(cudaStreamCreateWithFlags(&sigma_stream_, cudaStreamNonBlocking),
+      "create adaptive sigma CUDA stream");
+    CheckCuda(cudaStreamCreateWithFlags(
+        &visualization_stream_, cudaStreamNonBlocking),
+      "create visualization CUDA stream");
     CheckCuda(cudaEventCreate(&start_event_), "cudaEventCreate start");
     CheckCuda(cudaEventCreate(&stop_event_), "cudaEventCreate stop");
     CheckCuda(cudaEventCreate(&refinement_start_event_), "cudaEventCreate refinement start");
     CheckCuda(cudaEventCreate(&refinement_stop_event_), "cudaEventCreate refinement stop");
+    CheckCuda(cudaEventCreateWithFlags(
+        &sigma_inputs_ready_event_, cudaEventDisableTiming),
+      "create adaptive sigma input event");
+    CheckCuda(cudaEventCreateWithFlags(
+        &sigma_ready_event_, cudaEventDisableTiming),
+      "create adaptive sigma completion event");
     const std::size_t samples = config_.num_samples;
     const std::size_t horizon = config_.horizon;
     Allocate(random_states_, samples);
@@ -2039,6 +2200,13 @@ class CudaMppiController::Impl {
     Allocate(sigma_partials_, kSigmaBlocks * kControlDim * 2U);
     Allocate(finite_flags_, samples);
     Allocate(finite_count_, 1U);
+    for (auto & slot : visualization_slots_) {
+      Allocate(slot.weights, samples);
+      Allocate(slot.trajectories, samples * (horizon + 1U));
+      CheckCuda(cudaEventCreateWithFlags(
+          &slot.ready_event, cudaEventDisableTiming),
+        "create visualization snapshot event");
+    }
     if (config_.refinement.enabled) {
       const std::size_t state_count = horizon + 1U;
       const std::size_t multiplier_count = state_count * kStateDim;
@@ -2066,8 +2234,11 @@ class CudaMppiController::Impl {
       Allocate(refinement_original_metrics_, 1U);
       Allocate(refinement_initial_metrics_, 1U);
       Allocate(refinement_final_metrics_, 1U);
+      Allocate(refinement_delta_, 1U);
       Allocate(refinement_selected_, 1U);
       Allocate(refinement_accepted_, 1U);
+      Allocate(refinement_active_, 1U);
+      Allocate(refinement_sqp_iterations_, 1U);
       Allocate(refinement_pcg_iterations_, 1U);
       CheckCuda(cudaMemsetAsync(
         refinement_dual_, 0, multiplier_count * sizeof(float), stream_),
@@ -2204,6 +2375,13 @@ class CudaMppiController::Impl {
     Free(sigma_partials_);
     Free(finite_flags_);
     Free(finite_count_);
+    for (auto & slot : visualization_slots_) {
+      Free(slot.weights);
+      Free(slot.trajectories);
+      if (slot.ready_event != nullptr) {
+        cudaEventDestroy(slot.ready_event);
+      }
+    }
     Free(refinement_states_);
     Free(refinement_controls_);
     Free(refinement_anchor_states_);
@@ -2228,8 +2406,11 @@ class CudaMppiController::Impl {
     Free(refinement_original_metrics_);
     Free(refinement_initial_metrics_);
     Free(refinement_final_metrics_);
+    Free(refinement_delta_);
     Free(refinement_selected_);
     Free(refinement_accepted_);
+    Free(refinement_active_);
+    Free(refinement_sqp_iterations_);
     Free(refinement_pcg_iterations_);
     Free(neural_states_);
     Free(neural_input_);
@@ -2253,8 +2434,99 @@ class CudaMppiController::Impl {
     if (refinement_stop_event_ != nullptr) {
       cudaEventDestroy(refinement_stop_event_);
     }
+    if (sigma_inputs_ready_event_ != nullptr) {
+      cudaEventDestroy(sigma_inputs_ready_event_);
+    }
+    if (sigma_ready_event_ != nullptr) {
+      cudaEventDestroy(sigma_ready_event_);
+    }
     if (stream_ != nullptr) {
       cudaStreamDestroy(stream_);
+    }
+    if (sigma_stream_ != nullptr) {
+      cudaStreamDestroy(sigma_stream_);
+    }
+    if (visualization_stream_ != nullptr) {
+      cudaStreamDestroy(visualization_stream_);
+    }
+  }
+
+  std::vector<WeightedRollout> CollectVisualization(const std::uint64_t snapshot_id) {
+    if (snapshot_id == 0U) {
+      return {};
+    }
+    VisualizationSlot * slot = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(visualization_mutex_);
+      for (auto & candidate : visualization_slots_) {
+        if (candidate.state == VisualizationSlotState::kReady &&
+          candidate.id == snapshot_id)
+        {
+          candidate.state = VisualizationSlotState::kReading;
+          slot = &candidate;
+          break;
+        }
+      }
+    }
+    // Visualization is latest-only. A ready snapshot may be replaced before
+    // the worker reaches it; dropping that stale frame is preferable to ever
+    // applying back-pressure to control.
+    if (slot == nullptr) {
+      return {};
+    }
+
+    const auto release_slot = [this, slot, snapshot_id]() {
+        std::lock_guard<std::mutex> lock(visualization_mutex_);
+        if (slot->id == snapshot_id && slot->state == VisualizationSlotState::kReading) {
+          slot->state = VisualizationSlotState::kFree;
+        }
+      };
+    try {
+      std::vector<float> weights(config_.num_samples);
+      CheckCuda(cudaStreamWaitEvent(
+          visualization_stream_, slot->ready_event, 0U),
+        "wait for visualization snapshot");
+      CheckCuda(cudaMemcpyAsync(
+          weights.data(), slot->weights, weights.size() * sizeof(float),
+          cudaMemcpyDeviceToHost, visualization_stream_),
+        "copy visualization weights");
+      CheckCuda(cudaStreamSynchronize(visualization_stream_),
+        "wait for visualization weights");
+
+      std::vector<std::uint32_t> indices(config_.num_samples);
+      std::iota(indices.begin(), indices.end(), 0U);
+      const std::size_t rollout_count = std::min<std::size_t>(
+        slot->rollout_count, config_.num_samples);
+      std::partial_sort(
+        indices.begin(), indices.begin() + static_cast<std::ptrdiff_t>(rollout_count),
+        indices.end(),
+        [&weights](const std::uint32_t lhs, const std::uint32_t rhs) {
+          if (weights[lhs] == weights[rhs]) {
+            return lhs < rhs;
+          }
+          return weights[lhs] > weights[rhs];
+        });
+
+      std::vector<WeightedRollout> rollouts(rollout_count);
+      for (std::size_t rank = 0U; rank < rollout_count; ++rank) {
+        const std::uint32_t sample = indices[rank];
+        auto & rollout = rollouts[rank];
+        rollout.weight = weights[sample];
+        rollout.states.resize(static_cast<std::size_t>(config_.horizon) + 1U);
+        const State * source = slot->trajectories +
+          static_cast<std::size_t>(sample) * (config_.horizon + 1U);
+        CheckCuda(cudaMemcpyAsync(
+            rollout.states.data(), source, rollout.states.size() * sizeof(State),
+            cudaMemcpyDeviceToHost, visualization_stream_),
+          "copy visualization rollout");
+      }
+      CheckCuda(cudaStreamSynchronize(visualization_stream_),
+        "wait for visualization rollouts");
+      release_slot();
+      return rollouts;
+    } catch (...) {
+      release_slot();
+      throw;
     }
   }
 
@@ -2383,10 +2655,21 @@ class CudaMppiController::Impl {
       RolloutUpdatedControls<<<1, 1, 0, stream_>>>(
         initial_state, updated_, expected_, track_, device_config_, vehicle_);
     }
-    SigmaPartials<<<kSigmaBlocks, kSigmaThreads, 0, stream_>>>(
-      weights_device_, perturbations_, sigma_partials_, device_config_);
-    SigmaFinalize<<<1, 32, 0, stream_>>>(
-      sigma_partials_, sigma_hat_, device_config_);
+    if (config_.adaptation.adaptive_sigma) {
+      // Sigma only reads the completed MPPI weights and perturbations. Run its
+      // reduction concurrently with SQP and join only before the tiny result
+      // copy; normally it has finished several milliseconds earlier.
+      CheckCuda(cudaEventRecord(sigma_inputs_ready_event_, stream_),
+        "record adaptive sigma inputs");
+      CheckCuda(cudaStreamWaitEvent(sigma_stream_, sigma_inputs_ready_event_, 0U),
+        "wait for adaptive sigma inputs");
+      SigmaPartials<<<kSigmaBlocks, kSigmaThreads, 0, sigma_stream_>>>(
+        weights_device_, perturbations_, sigma_partials_, device_config_);
+      SigmaFinalize<<<1, 32, 0, sigma_stream_>>>(
+        sigma_partials_, sigma_hat_, device_config_);
+      CheckCuda(cudaEventRecord(sigma_ready_event_, sigma_stream_),
+        "record adaptive sigma completion");
+    }
     if (config_.refinement.enabled) {
       CheckCuda(cudaEventRecord(refinement_start_event_, stream_),
         "record MPC refinement start");
@@ -2407,6 +2690,12 @@ class CudaMppiController::Impl {
           refinement_dual_, 0, (horizon + 1U) * kStateDim * sizeof(float), stream_),
           "reset MPC dual warm start");
       }
+      CheckCuda(cudaMemsetAsync(
+        refinement_active_, 1, sizeof(std::uint8_t), stream_),
+        "activate MPC refinement");
+      CheckCuda(cudaMemsetAsync(
+        refinement_sqp_iterations_, 0, sizeof(std::uint16_t), stream_),
+        "reset MPC SQP iteration count");
       const std::size_t derivative_values = std::max(
         (horizon + 1U) * kStateDim, horizon * kControlDim);
       const int derivative_blocks = static_cast<int>((derivative_values + 255U) / 256U);
@@ -2420,42 +2709,43 @@ class CudaMppiController::Impl {
       {
         LinearizeRefinementDynamics<<<static_cast<int>(horizon), 32, 0, stream_>>>(
           refinement_states_, refinement_controls_, refinement_dynamics_a_,
-          refinement_dynamics_b_, refinement_defects_, track_, device_config_,
+          refinement_dynamics_b_, refinement_defects_, refinement_active_, track_, device_config_,
           device_refinement_, vehicle_);
         QuadraticizeRefinementCost<<<derivative_blocks, 256, 0, stream_>>>(
           refinement_states_, refinement_controls_, refinement_anchor_states_,
           refinement_anchor_controls_, previous_control,
           refinement_state_gradient_, refinement_state_inverse_hessian_,
           refinement_control_gradient_, refinement_control_inverse_hessian_,
-          initial_path_s_m, track_, device_reference, obstacle_field_, device_config_,
+          refinement_active_, initial_path_s_m, track_, device_reference,
+          obstacle_field_, device_config_,
           costs_, device_refinement_);
         BuildRefinementSchur<<<static_cast<int>(horizon + 1U), 1, 0, stream_>>>(
           refinement_dynamics_a_, refinement_dynamics_b_, refinement_defects_,
           refinement_state_gradient_, refinement_state_inverse_hessian_,
           refinement_control_gradient_, refinement_control_inverse_hessian_,
           refinement_schur_diagonal_, refinement_schur_upper_,
-          refinement_schur_inverse_diagonal_, refinement_rhs_, device_config_,
-          device_refinement_);
+          refinement_schur_inverse_diagonal_, refinement_rhs_, refinement_active_,
+          device_config_, device_refinement_);
         SolveRefinementPcg<<<1, kRefinementThreads, pcg_shared_bytes, stream_>>>(
           refinement_schur_diagonal_, refinement_schur_upper_,
           refinement_schur_inverse_diagonal_, refinement_rhs_, refinement_dual_,
-          refinement_pcg_iterations_, device_config_, device_refinement_);
+          refinement_pcg_iterations_, refinement_active_, device_config_, device_refinement_);
         RecoverRefinementStep<<<derivative_blocks, 256, 0, stream_>>>(
           refinement_dynamics_a_, refinement_dynamics_b_,
           refinement_state_gradient_, refinement_state_inverse_hessian_,
           refinement_control_gradient_, refinement_control_inverse_hessian_,
           refinement_dual_, refinement_state_step_, refinement_control_step_,
-          device_config_, device_refinement_);
+          refinement_active_, device_config_, device_refinement_);
         EvaluateRefinementLineSearch<<<kLineSearchCandidates, 1, 0, stream_>>>(
           initial_state, initial_path_s_m, previous_control, refinement_states_,
           refinement_controls_, refinement_control_step_,
           refinement_anchor_states_, refinement_anchor_controls_,
           refinement_candidate_states_, refinement_candidate_controls_,
-          refinement_metrics_, track_, device_reference, obstacle_field_,
+          refinement_metrics_, refinement_active_, iteration, track_, device_reference, obstacle_field_,
           device_config_, costs_, device_refinement_, vehicle_);
         SelectRefinementLineSearch<<<1, 1, 0, stream_>>>(
           refinement_metrics_, refinement_selected_, refinement_initial_metrics_,
-          refinement_final_metrics_);
+          refinement_final_metrics_, refinement_active_, refinement_sqp_iterations_, iteration);
         if (iteration == 0U) {
           CheckCuda(cudaMemcpyAsync(
             refinement_original_metrics_, refinement_initial_metrics_,
@@ -2464,12 +2754,15 @@ class CudaMppiController::Impl {
         }
         ApplyRefinementLineSearch<<<trajectory_blocks, 256, 0, stream_>>>(
           refinement_states_, refinement_controls_, refinement_candidate_states_,
-          refinement_candidate_controls_, refinement_selected_, device_config_);
+          refinement_candidate_controls_, refinement_selected_, refinement_active_, device_config_);
       }
       CommitRefinement<<<trajectory_blocks, 256, 0, stream_>>>(
         refinement_states_, refinement_controls_, expected_, updated_,
         refinement_original_metrics_, refinement_final_metrics_,
         refinement_accepted_, device_config_, device_refinement_);
+      MeasureRefinementDelta<<<1, 1, 0, stream_>>>(
+        refinement_anchor_states_, refinement_anchor_controls_, expected_, updated_,
+        refinement_accepted_, refinement_delta_, device_config_);
       CheckCuda(cudaEventRecord(refinement_stop_event_, stream_),
         "record MPC refinement stop");
     }
@@ -2493,9 +2786,11 @@ class CudaMppiController::Impl {
     float ess = 0.0F;
     std::uint32_t finite_count = 0U;
     std::uint8_t refinement_accepted = 0U;
+    std::uint16_t refinement_sqp_iterations = 0U;
     std::uint16_t refinement_pcg_iterations = 0U;
     RefinementMetrics refinement_initial_metrics{};
     RefinementMetrics refinement_final_metrics{};
+    RefinementDelta refinement_delta{};
     std::array<RefinementMetrics, kLineSearchCandidates> refinement_trial_metrics{};
     CheckCuda(cudaMemcpyAsync(
       solution.controls.data(), updated_, horizon * sizeof(Control),
@@ -2506,9 +2801,13 @@ class CudaMppiController::Impl {
     CheckCuda(cudaMemcpyAsync(&minimum, minimum_, sizeof(float), cudaMemcpyDeviceToHost, stream_),
       "copy minimum cost");
     CheckCuda(cudaMemcpyAsync(&ess, ess_, sizeof(float), cudaMemcpyDeviceToHost, stream_), "copy ESS");
-    CheckCuda(cudaMemcpyAsync(
-      sigma_hat.data(), sigma_hat_, kControlDim * sizeof(float),
-      cudaMemcpyDeviceToHost, stream_), "copy sigma statistics");
+    if (config_.adaptation.adaptive_sigma) {
+      CheckCuda(cudaStreamWaitEvent(stream_, sigma_ready_event_, 0U),
+        "join adaptive sigma result");
+      CheckCuda(cudaMemcpyAsync(
+        sigma_hat.data(), sigma_hat_, kControlDim * sizeof(float),
+        cudaMemcpyDeviceToHost, stream_), "copy sigma statistics");
+    }
     CheckCuda(cudaMemcpyAsync(
       &finite_count, finite_count_, sizeof(std::uint32_t),
       cudaMemcpyDeviceToHost, stream_), "copy finite rollout count");
@@ -2516,6 +2815,9 @@ class CudaMppiController::Impl {
       CheckCuda(cudaMemcpyAsync(
         &refinement_accepted, refinement_accepted_, sizeof(std::uint8_t),
         cudaMemcpyDeviceToHost, stream_), "copy MPC refinement acceptance");
+      CheckCuda(cudaMemcpyAsync(
+        &refinement_sqp_iterations, refinement_sqp_iterations_, sizeof(std::uint16_t),
+        cudaMemcpyDeviceToHost, stream_), "copy MPC refinement SQP iterations");
       CheckCuda(cudaMemcpyAsync(
         &refinement_pcg_iterations, refinement_pcg_iterations_, sizeof(std::uint16_t),
         cudaMemcpyDeviceToHost, stream_), "copy MPC refinement PCG iterations");
@@ -2528,11 +2830,16 @@ class CudaMppiController::Impl {
         sizeof(RefinementMetrics), cudaMemcpyDeviceToHost, stream_),
         "copy final MPC refinement metrics");
       CheckCuda(cudaMemcpyAsync(
+        &refinement_delta, refinement_delta_, sizeof(RefinementDelta),
+        cudaMemcpyDeviceToHost, stream_), "copy MPC refinement delta");
+      CheckCuda(cudaMemcpyAsync(
         refinement_trial_metrics.data(), refinement_metrics_,
         refinement_trial_metrics.size() * sizeof(RefinementMetrics),
         cudaMemcpyDeviceToHost, stream_), "copy MPC refinement line-search metrics");
     }
     CheckCuda(cudaEventRecord(stop_event_, stream_), "record MPPI stop");
+    const std::uint64_t visualization_snapshot_id = QueueVisualizationSnapshot(
+      num_visualization_rollouts);
     CheckCuda(cudaEventSynchronize(stop_event_), "wait for MPPI solve");
     float elapsed_ms = 0.0F;
     CheckCuda(cudaEventElapsedTime(&elapsed_ms, start_event_, stop_event_), "measure MPPI solve");
@@ -2541,42 +2848,6 @@ class CudaMppiController::Impl {
       CheckCuda(cudaEventElapsedTime(
         &refinement_elapsed_ms, refinement_start_event_, refinement_stop_event_),
         "measure MPC refinement");
-    }
-
-    // Visualization is intentionally sampled only when requested by the ROS
-    // runtime. The control solve has completed at this point, so these optional
-    // copies are outside the measured solve time and cannot delay GPU kernels.
-    const std::size_t rollout_count = std::min<std::size_t>(
-      num_visualization_rollouts, config_.num_samples);
-    if (rollout_count > 0U) {
-      std::vector<float> weights(config_.num_samples);
-      CheckCuda(cudaMemcpy(
-        weights.data(), weights_device_, weights.size() * sizeof(float),
-        cudaMemcpyDeviceToHost), "copy visualization weights");
-      std::vector<std::uint32_t> indices(config_.num_samples);
-      std::iota(indices.begin(), indices.end(), 0U);
-      std::partial_sort(
-        indices.begin(), indices.begin() + static_cast<std::ptrdiff_t>(rollout_count),
-        indices.end(),
-        [&weights](const std::uint32_t lhs, const std::uint32_t rhs) {
-          if (weights[lhs] == weights[rhs]) {
-            return lhs < rhs;
-          }
-          return weights[lhs] > weights[rhs];
-        });
-      solution.sampled_rollouts.reserve(rollout_count);
-      for (std::size_t rank = 0; rank < rollout_count; ++rank) {
-        const auto sample = indices[rank];
-        WeightedRollout rollout;
-        rollout.weight = weights[sample];
-        rollout.states.resize(horizon + 1U);
-        const auto * source = trajectories_ +
-          static_cast<std::size_t>(sample) * (horizon + 1U);
-        CheckCuda(cudaMemcpy(
-          rollout.states.data(), source, rollout.states.size() * sizeof(State),
-          cudaMemcpyDeviceToHost), "copy visualization rollout");
-        solution.sampled_rollouts.push_back(std::move(rollout));
-      }
     }
 
     // Decomposed on request only, at the ROS runtime's own reduced rate, and
@@ -2599,6 +2870,7 @@ class CudaMppiController::Impl {
     }
 
     solution.diagnostics.minimum_cost = minimum;
+    solution.visualization_snapshot_id = visualization_snapshot_id;
     solution.diagnostics.effective_sample_size = ess;
     solution.diagnostics.lambda_used = config_.lambda;
     solution.diagnostics.sigma_used = config_.sigma;
@@ -2606,16 +2878,31 @@ class CudaMppiController::Impl {
     solution.diagnostics.finite_rollouts = finite_count;
     solution.diagnostics.refinement_attempted = config_.refinement.enabled;
     solution.diagnostics.refinement_accepted = refinement_accepted != 0U;
-    solution.diagnostics.refinement_iterations = config_.refinement.enabled ?
-      config_.refinement.sqp_iterations : 0U;
+    solution.diagnostics.refinement_iterations = refinement_sqp_iterations;
     solution.diagnostics.refinement_pcg_iterations = refinement_pcg_iterations;
     solution.diagnostics.refinement_time_ms = refinement_elapsed_ms;
     solution.diagnostics.refinement_cost_before = refinement_initial_metrics.cost;
     solution.diagnostics.refinement_cost_after = refinement_final_metrics.cost;
+    solution.diagnostics.refinement_merit_before = refinement_initial_metrics.merit;
+    solution.diagnostics.refinement_merit_after = refinement_final_metrics.merit;
     solution.diagnostics.refinement_constraint_residual_before =
       refinement_initial_metrics.maximum_dynamics_residual;
     solution.diagnostics.refinement_constraint_residual =
       refinement_final_metrics.maximum_dynamics_residual;
+    for (std::size_t channel = 0U; channel < kStateDim; ++channel) {
+      solution.diagnostics.refinement_state_rms_delta[channel] =
+        refinement_delta.state_rms[channel];
+      solution.diagnostics.refinement_state_max_delta[channel] =
+        refinement_delta.state_max[channel];
+    }
+    for (std::size_t channel = 0U; channel < kControlDim; ++channel) {
+      solution.diagnostics.refinement_control_rms_delta[channel] =
+        refinement_delta.control_rms[channel];
+      solution.diagnostics.refinement_control_max_delta[channel] =
+        refinement_delta.control_max[channel];
+      solution.diagnostics.refinement_first_control_delta[channel] =
+        refinement_delta.first_control[channel];
+    }
     for (std::size_t candidate = 0U; candidate < kLineSearchCandidates; ++candidate) {
       solution.diagnostics.refinement_trial_merits[candidate] =
         refinement_trial_metrics[candidate].merit;
@@ -2677,6 +2964,58 @@ class CudaMppiController::Impl {
   const MppiConfig & config() const noexcept { return config_; }
 
  private:
+  std::uint64_t QueueVisualizationSnapshot(const std::uint32_t rollout_count) {
+    if (rollout_count == 0U) {
+      return 0U;
+    }
+    std::lock_guard<std::mutex> lock(visualization_mutex_);
+    VisualizationSlot * slot = nullptr;
+    for (auto & candidate : visualization_slots_) {
+      if (candidate.state == VisualizationSlotState::kFree) {
+        slot = &candidate;
+        break;
+      }
+    }
+    if (slot == nullptr) {
+      // Replace the oldest snapshot that the worker has not started reading.
+      for (auto & candidate : visualization_slots_) {
+        if (candidate.state == VisualizationSlotState::kReady &&
+          (slot == nullptr || candidate.id < slot->id))
+        {
+          slot = &candidate;
+        }
+      }
+    }
+    if (slot == nullptr) {
+      return 0U;
+    }
+
+    slot->id = next_visualization_snapshot_id_++;
+    if (next_visualization_snapshot_id_ == 0U) {
+      next_visualization_snapshot_id_ = 1U;
+    }
+    slot->rollout_count = std::min(rollout_count, config_.num_samples);
+    slot->state = VisualizationSlotState::kReady;
+    try {
+      CheckCuda(cudaMemcpyAsync(
+          slot->weights, weights_device_, config_.num_samples * sizeof(float),
+          cudaMemcpyDeviceToDevice, stream_),
+        "snapshot visualization weights");
+      const std::size_t trajectory_count =
+        static_cast<std::size_t>(config_.num_samples) * (config_.horizon + 1U);
+      CheckCuda(cudaMemcpyAsync(
+          slot->trajectories, trajectories_, trajectory_count * sizeof(State),
+          cudaMemcpyDeviceToDevice, stream_),
+        "snapshot visualization rollouts");
+      CheckCuda(cudaEventRecord(slot->ready_event, stream_),
+        "record visualization snapshot");
+    } catch (...) {
+      slot->state = VisualizationSlotState::kFree;
+      throw;
+    }
+    return slot->id;
+  }
+
   MppiConfig config_;
   VehicleParameters vehicle_;
   ObstacleConfig obstacle_config_;
@@ -2685,10 +3024,14 @@ class CudaMppiController::Impl {
   DeviceRefinement device_refinement_{};
   std::array<float, kControlDim> base_sigma_{};
   cudaStream_t stream_{nullptr};
+  cudaStream_t sigma_stream_{nullptr};
+  cudaStream_t visualization_stream_{nullptr};
   cudaEvent_t start_event_{nullptr};
   cudaEvent_t stop_event_{nullptr};
   cudaEvent_t refinement_start_event_{nullptr};
   cudaEvent_t refinement_stop_event_{nullptr};
+  cudaEvent_t sigma_inputs_ready_event_{nullptr};
+  cudaEvent_t sigma_ready_event_{nullptr};
   curandStatePhilox4_32_10_t * random_states_{nullptr};
   float * raw_noise_{nullptr};
   Control * candidates_{nullptr};
@@ -2729,6 +3072,9 @@ class CudaMppiController::Impl {
   float * sigma_partials_{nullptr};
   std::uint32_t * finite_flags_{nullptr};
   std::uint32_t * finite_count_{nullptr};
+  std::array<VisualizationSlot, kVisualizationSlotCount> visualization_slots_{};
+  std::mutex visualization_mutex_;
+  std::uint64_t next_visualization_snapshot_id_{1U};
   State * refinement_states_{nullptr};
   Control * refinement_controls_{nullptr};
   State * refinement_anchor_states_{nullptr};
@@ -2753,8 +3099,11 @@ class CudaMppiController::Impl {
   RefinementMetrics * refinement_original_metrics_{nullptr};
   RefinementMetrics * refinement_initial_metrics_{nullptr};
   RefinementMetrics * refinement_final_metrics_{nullptr};
+  RefinementDelta * refinement_delta_{nullptr};
   std::uint32_t * refinement_selected_{nullptr};
   std::uint8_t * refinement_accepted_{nullptr};
+  std::uint8_t * refinement_active_{nullptr};
+  std::uint16_t * refinement_sqp_iterations_{nullptr};
   std::uint16_t * refinement_pcg_iterations_{nullptr};
   State * neural_states_{nullptr};
   float * neural_input_{nullptr};
@@ -2791,6 +3140,12 @@ MppiSolution CudaMppiController::Solve(
   return impl_->Solve(
     initial_state, reference, previous_control, initial_path_s_m, shift_fraction,
     reset, num_visualization_rollouts, capture_cost_terms);
+}
+
+std::vector<WeightedRollout> CudaMppiController::CollectVisualization(
+  const std::uint64_t snapshot_id)
+{
+  return impl_->CollectVisualization(snapshot_id);
 }
 
 const MppiConfig & CudaMppiController::config() const noexcept { return impl_->config(); }

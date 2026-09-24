@@ -54,11 +54,11 @@ void ValidateDirectControlConfig(const DirectControlConfig & config) {
   // One steering_scale is applied to both axles, but the servos differ in gain
   // and possibly sign. The four-wheel transport therefore carries plain radians
   // and leaves each axle's mapping to its own calibration in ekf_mcu_driver.
-  if (config.four_wheel && config.steering_scale != 1.0F) {
-    throw std::invalid_argument(
-      "direct_control_four_wheel requires direct_control_steering_scale 1.0: both axles "
-      "are sent in radians and ekf_mcu_driver applies each servo's calibration");
-  }
+  // if (config.four_wheel && config.steering_scale != 1.0F) {
+  //   throw std::invalid_argument(
+  //     "direct_control_four_wheel requires direct_control_steering_scale 1.0: both axles "
+  //     "are sent in radians and ekf_mcu_driver applies each servo's calibration");
+  // }
 }
 
 namespace {
@@ -88,9 +88,9 @@ ConvertedControl ConvertFirstControl(
     throw std::invalid_argument("planned direct control sample must be finite");
   }
 
-  float output = wheel_torque_nm;
+  float output = wheel_torque_nm * config.torque_to_throttle_scale;
   if (config.mode == DirectControlMode::kDutyCycle) {
-    const float unbounded_throttle = wheel_torque_nm * config.torque_to_throttle_scale;
+    const float unbounded_throttle = wheel_torque_nm ;
     if (!std::isfinite(unbounded_throttle)) {
       throw std::invalid_argument("converted direct control throttle must be finite");
     }

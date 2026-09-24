@@ -39,6 +39,7 @@ struct PlannedTrajectory {
   std::vector<CartesianTrajectoryState> states;  // T, terminal x[T] omitted
   std::vector<Control> controls;                 // T
   std::vector<WeightedRollout> sampled_rollouts;  // optional, highest weight first
+  std::uint64_t visualization_snapshot_id{};       // consumed by visualization worker
   MppiDiagnostics diagnostics{};
   Projection projection{};
   // Frame the rollout states in sampled_rollouts are expressed in.
@@ -69,11 +70,14 @@ class MppiController {
   // capture_cost_terms fills diagnostics.cost_terms with the per-term
   // decomposition of the returned trajectory's cost. Request it well below the
   // solve rate; it is debug output, not part of the control path.
+  // A nonzero num_visualization_rollouts queues a best-effort CUDA snapshot;
+  // call CollectVisualization from a non-control worker to consume it.
   [[nodiscard]] PlannedTrajectory PlanLatest(
     std::uint32_t num_visualization_rollouts = 0U, bool capture_cost_terms = false);
   [[nodiscard]] PlannedTrajectory Plan(
     const VehicleObservation & observation,
     std::uint32_t num_visualization_rollouts = 0U, bool capture_cost_terms = false);
+  [[nodiscard]] bool CollectVisualization(PlannedTrajectory & trajectory);
   // Called only after the ROS command publisher accepts a solution. This keeps
   // the fallback feedback aligned with what left the controller, not merely
   // with the newest (possibly downsampled) solve.

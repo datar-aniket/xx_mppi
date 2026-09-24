@@ -342,8 +342,17 @@ struct MppiDiagnostics {
   float refinement_time_ms{};
   float refinement_cost_before{std::numeric_limits<float>::infinity()};
   float refinement_cost_after{std::numeric_limits<float>::infinity()};
+  float refinement_merit_before{std::numeric_limits<float>::infinity()};
+  float refinement_merit_after{std::numeric_limits<float>::infinity()};
   float refinement_constraint_residual_before{std::numeric_limits<float>::infinity()};
   float refinement_constraint_residual{std::numeric_limits<float>::infinity()};
+  // Difference between the exact pre-SQP MPPI mean and the trajectory returned
+  // by Solve. Rejected refinements report zero because MPPI remains published.
+  std::array<float, kStateDim> refinement_state_rms_delta{};
+  std::array<float, kStateDim> refinement_state_max_delta{};
+  std::array<float, kControlDim> refinement_control_rms_delta{};
+  std::array<float, kControlDim> refinement_control_max_delta{};
+  std::array<float, kControlDim> refinement_first_control_delta{};
   std::array<float, kMpcLineSearchCandidates> refinement_trial_merits{};
   std::array<float, kMpcLineSearchCandidates> refinement_trial_constraint_residuals{};
   // Present only on solves the ROS runtime asked to decompose, which it does at
@@ -360,6 +369,10 @@ struct MppiSolution {
   std::vector<State> states;       // T + 1 internally
   std::vector<Control> controls;   // T
   std::vector<WeightedRollout> sampled_rollouts;  // optional, highest weight first
+  // Nonzero when Solve queued a device-side rollout snapshot for asynchronous
+  // collection.  The visualization worker consumes it through
+  // CudaMppiController::CollectVisualization rather than blocking Solve.
+  std::uint64_t visualization_snapshot_id{};
   MppiDiagnostics diagnostics{};
 };
 

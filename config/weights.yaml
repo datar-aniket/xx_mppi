@@ -34,8 +34,8 @@ lateral_damping:
   decay_rate: 0.2
 
 wheel_slip: 
-  weight: 500.0
-  band: 1.2
+  weight: 5000.0
+  band: 0.8
 
 # Rear steering mirrors the front steering weights. These are inert while the
 # rear channel is pinned in mppi.yaml, but they must be non-zero before it is

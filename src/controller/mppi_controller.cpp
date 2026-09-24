@@ -130,10 +130,21 @@ PlannedTrajectory MppiController::PlanLatest(
     result.states.push_back(CartesianTrajectoryState{point.first, point.second});
   }
   result.sampled_rollouts = std::move(solution.sampled_rollouts);
+  result.visualization_snapshot_id = solution.visualization_snapshot_id;
 
   previous_pose_time_ns_ = observation.pose_time_ns;
   reset_next_ = false;
   return result;
+}
+
+bool MppiController::CollectVisualization(PlannedTrajectory & trajectory) {
+  if (trajectory.visualization_snapshot_id == 0U) {
+    return false;
+  }
+  trajectory.sampled_rollouts = optimizer_.CollectVisualization(
+    trajectory.visualization_snapshot_id);
+  trajectory.visualization_snapshot_id = 0U;
+  return !trajectory.sampled_rollouts.empty();
 }
 
 void MppiController::RecordPublishedControl(const Control & control) noexcept {

@@ -260,6 +260,10 @@ The sample bench launch enables it automatically. Set RViz's fixed frame to
 | `/xx_mppi/track_right_boundary` | `nav_msgs/Path` | Static negative-`e` boundary |
 
 All xx_mppi ROS publishers and subscriptions use **best-effort reliability**.
+Sampled-rollout capture is also best effort: GPU snapshots are double-buffered
+and consumed by the visualization worker on a separate CUDA stream. Slow RViz
+subscribers or marker conversion can therefore drop visualization frames, but
+cannot hold the solver thread before command publication.
 Set each RViz display's Reliability Policy to `Best Effort`; a Reliable RViz
 subscription is not QoS-compatible with these publishers. The three static
 paths are also transient-local and are republished at 1 Hz by the visualization

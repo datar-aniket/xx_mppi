@@ -35,11 +35,18 @@ class CudaMppiController {
   // individual terms and returns it in the diagnostics. It runs outside the
   // measured solve, so callers should still request it well below the solve
   // rate rather than on every cycle.
+  // num_visualization_rollouts only queues a snapshot and returns its id in the
+  // solution; rollout readback happens later through CollectVisualization.
   [[nodiscard]] MppiSolution Solve(
     const State & initial_state, const ReferenceHorizon & reference,
     const Control & previous_control, float initial_path_s_m, float shift_fraction,
     bool reset, std::uint32_t num_visualization_rollouts = 0U,
     bool capture_cost_terms = false);
+  // Waits for and reads a visualization-only snapshot on a dedicated CUDA
+  // stream.  This is intended for the visualization worker, never the control
+  // or solver thread. A stale/dropped id returns an empty vector.
+  [[nodiscard]] std::vector<WeightedRollout> CollectVisualization(
+    std::uint64_t snapshot_id);
   void UpdateObstacleField(const ObstacleField & field);
   void ClearObstacleField();
 

@@ -123,15 +123,29 @@ are projected during a seven-candidate parallel line search. Each nonzero trial
 then receives a nonlinear feasibility rollout, so an accepted result satisfies
 the actual dynamics rather than only their local linearization. Safety checks,
 merit decrease, and the configured final residual tolerance gate acceptance;
-rejection preserves the original MPPI command. An accepted control sequence is
-shifted into the next MPPI nominal, closing the sampling/refinement loop.
+rejection preserves the original MPPI expected states and controls. The same
+selected pair is returned to the controller and published as the trajectory;
+there is no separate visualization-only refinement path. An accepted control
+sequence is shifted into the next MPPI nominal, closing the
+sampling/refinement loop. The
+line search chooses the lowest-merit safe candidate and terminates SQP when no
+candidate improves the current primal. PCG uses relative-residual convergence
+and warp-level dot-product reductions; `sqp_iterations` and `pcg_iterations`
+are therefore safety caps rather than work that is unconditionally executed.
 
 Refinement currently supports analytic dynamics and horizons up to 128. The
 TensorRT model is rejected at startup when refinement is enabled because it
 does not yet expose dynamics Jacobians.
 
 The ROS runtime owns independent solver, command-publication, terminal-info,
-visualization, and obstacle workers. The ROS EKF callback only validates and
+visualization, and obstacle workers. Rollout visualization uses two device-side
+snapshot buffers: after recording the control-complete event, the solver queues
+a device-to-device snapshot and returns without waiting for visualization.
+The visualization worker waits on that snapshot and performs weight readback,
+top-rollout selection, trajectory readback, conversion, and ROS publication on
+its own CUDA stream and CPU thread. Snapshots are latest-only; if both buffers
+are still being read, visualization drops a frame instead of delaying control.
+The ROS EKF callback only validates and
 replaces a latest-state mailbox, so projection or CUDA work cannot hold up new
 state delivery. A solve is performed only when a new EKF generation is
 available; the publication worker selects the newest completed solution and
@@ -151,8 +165,11 @@ control smoothness, asymmetric longitudinal acceleration/deceleration, steering
 velocity, and wheel-torque rate. The crash and sideslip latches start at the first
 integrated state rather than at the initial state, which every sample shares:
 latching there would set the same flag across the whole population and remove
-all boundary discrimination from the solve. Online lambda and diagonal-sigma adaptation use effective
-sample size and selection-pressure statistics.
+all boundary discrimination from the solve. Online lambda and diagonal-sigma
+adaptation use effective sample size and selection-pressure statistics. The
+sigma statistics use warp reductions on a dedicated CUDA stream and overlap the
+SQP pass; the control stream joins only the completed three-value result before
+returning the solution.
 
 `weights.yaml` separates the smooth boundary ramp from the hard crash limit.
 `boundary.margin` selects how far inside the CSV bounds the shaping ramp starts,

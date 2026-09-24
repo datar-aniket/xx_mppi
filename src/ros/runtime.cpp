@@ -340,7 +340,14 @@ void MppiRosRuntime::VisualizationWorker() {
     }
     if (work) {
       try {
-        PublishTrajectoryVisualization(*work->first, work->second);
+        // The control solution is immutable once published. Make the small
+        // host-side copy here, then attach the heavyweight sampled rollouts
+        // from the CUDA visualization stream without touching the solver or
+        // control-publication threads.
+        PlannedTrajectory visualization_trajectory = *work->first;
+        if (controller_->CollectVisualization(visualization_trajectory)) {
+          PublishTrajectoryVisualization(visualization_trajectory, work->second);
+        }
       } catch (const std::exception & error) {
         RCLCPP_ERROR_THROTTLE(
           node_.get_logger(), *node_.get_clock(), 1000,
