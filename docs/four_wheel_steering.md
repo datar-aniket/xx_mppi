@@ -57,6 +57,24 @@ instead. Set `direct_control_four_wheel:=true` to publish it on
 ever created, since publishing both would give the driver two command streams for
 the same actuator. `cmd_vel` is left alone for `PID_lanekeeping`.
 
+<<<<<<< HEAD
+`ekf_mcu_driver` subscribes when `subscribe_four_wheel_control_topic` is set. It
+converts and transmits the front angle and throttle exactly as the Twist path
+does, and **drops the rear angle**: `RawDirectControlPacket` has no field for it.
+
+## What is still missing
+
+- **Firmware.** `RawDirectControlPacket` is 24 bytes with `uint8_t pad[7]` at
+  offsets 17-23. A rear `float32` fits at 17-20 without changing the packet
+  length, but needs a matching change in `~/xxCar_MCU/apps/companion/comp_proto.h`,
+  which lives outside this workspace.
+- **Feedback.** `EkfState` carries one `steering_angle`, and
+  `RawVehicleStatePacket` has a single spare byte, so there is no rear steering
+  measurement. The rear channel falls back to its commanded value.
+- **Rear servo calibration.** The rear angle currently reuses the front's
+  `steering_scale` and `steering_limit_rad`, which assumes the two servos share a
+  calibration. Revisit once the rear is characterized.
+=======
 `ekf_mcu_driver` subscribes when `subscribe_four_wheel_control_topic` is set
 (`ekf_mcu.subscribe_four_wheel_control_topic` in `bringup_params.yaml`). With
 `enable_steering_calibration` on, both angles arrive in radians and each axle is
@@ -96,11 +114,26 @@ never changes during the sweep. Raw feedback is not an angle, so keep
   servo, not a measurement (converted to radians once the rear is calibrated).
   `MppiController::PreviousControl` does not read it yet and uses zero for the
   rear.
+>>>>>>> a3fc8c36a3df4381b0ece76bb8b74cead10b84b6
 - **The learned model.** `tensorrt_neural_derivative` is front-steer-only; see
   `model_pipeline.md`.
 
 ## Enabling it
 
+<<<<<<< HEAD
+Only after the firmware carries a rear angle and a bench test shows the rear
+servo tracking a commanded one:
+
+1. `config/model.yaml`: `name: dynamic_bicycle_fiala_4ws`
+2. `config/mppi.yaml`: give `rear_steering_angle_rad` a nonzero `sigma` and open
+   its `control_bounds`.
+3. `config/weights.yaml` already carries rear entries mirroring the front
+   steering weights. They must stay non-zero — a zero-weight channel is free to
+   oscillate at no cost.
+
+Enabling the model without the firmware makes MPPI plan rear-axle motion the car
+cannot execute, which degrades tracking rather than improving it.
+=======
 Only after the rear is calibrated and a bench test shows it tracking a commanded
 angle in the right direction:
 
@@ -115,6 +148,7 @@ angle in the right direction:
    steering weights. They must stay non-zero — a zero-weight channel is free to
    oscillate at no cost.
 6. Launch `xx_mppi` with `direct_control_four_wheel:=true`.
+>>>>>>> a3fc8c36a3df4381b0ece76bb8b74cead10b84b6
 
 ## Cost
 
