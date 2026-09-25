@@ -10,7 +10,8 @@ namespace xxcar::mppi {
 class MppiControllerBuilder {
  public:
   static std::unique_ptr<MppiController> FromConfigDirectory(
-    const std::string & config_directory);
+    const std::string & config_directory,
+    const std::string & vehicle_config_file = {});
 };
 
 }  // namespace xxcar::mppi

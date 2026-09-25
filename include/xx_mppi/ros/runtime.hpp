@@ -32,6 +32,7 @@ class MppiRosRuntime {
  public:
   MppiRosRuntime(
     rclcpp::Node & node, const std::string & config_directory,
+    const std::string & vehicle_config_file,
     const std::string & trajectory_topic = "vehicle_control_trajectory",
     DirectControlConfig direct_control = {},
     VisualizationConfig visualization = {},

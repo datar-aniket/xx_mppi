@@ -72,8 +72,11 @@ ros2 launch xx_mppi mppi.launch.py
 The launch file finds the installed package share through the ament index and
 uses its `config` directory by default. Set `current_map` to a map directory;
 `model.yaml` derives `<folder>/<folder>_frenet_map.csv` from it. Other relative
-assets such as `vehicle.yaml` and `model.plan` resolve against the configuration
-directory. Use `config_directory:=/absolute/alternate/config` only when
+assets such as `model.plan` resolve against the configuration directory. A
+robot-specific physical profile can be supplied separately with
+`vehicle_config_file:=/absolute/path/to/vehicle.yaml`; otherwise the loader uses
+`vehicle_params_path` from `model.yaml`. Use
+`config_directory:=/absolute/alternate/config` only when
 intentionally loading a configuration outside this package.
 
 See:

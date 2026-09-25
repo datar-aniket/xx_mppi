@@ -97,6 +97,14 @@ struct VehicleParameters {
   float driven_wheel_inertia_kgm2{0.01F};
   float front_brake_bias{0.0F};
   bool locked_awd{false};
+  int motor_pole_pairs{1};
+  float min_current_a{-50.0F};
+  float max_current_a{50.0F};
+  float min_steering_angle_rad{-0.5F};
+  float max_steering_angle_rad{0.5F};
+  float rear_min_steering_angle_rad{0.0F};
+  float rear_max_steering_angle_rad{0.0F};
+  float motor_to_wheel_ratio{1.0F};
 };
 
 struct AdaptationConfig {

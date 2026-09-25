@@ -96,6 +96,34 @@ std::string ModelYaml(const std::string & name) {
 
 }  // namespace
 
+TEST(Config, LoadsExternalNestedVehicleProfileAndPhysicalSteeringBounds) {
+  const auto directory = MakeOverlayConfig("xx_mppi_test_external_vehicle_config");
+  const auto vehicle_path = directory / "external_vehicle.yaml";
+  WriteFile(
+    vehicle_path,
+    "vehicle:\n"
+    "  mass_kg: 3.0\n"
+    "  yaw_inertia_kgm2: 0.03\n"
+    "  geometry: {cg_to_front_m: 0.13, cg_to_rear_m: 0.14}\n"
+    "  steering: {min_angle_rad: -0.45, max_angle_rad: 0.40, "
+    "rear_min_angle_rad: -0.1, rear_max_angle_rad: 0.1}\n"
+    "  motor: {pole_pairs: 2, min_current_a: -50.0, max_current_a: 50.0}\n"
+    "  drivetrain: {motor_to_wheel_ratio: 2.5, "
+    "driven_wheel_inertia_kgm2: 0.02, locked_awd: true, front_brake_bias: 0.5}\n"
+    "  tires: {wheel_radius_m: 0.062, front_cornering_stiffness_nprad: 150.0, "
+    "rear_cornering_stiffness_nprad: 150.0, front_friction_coefficient: 0.7, "
+    "rear_friction_coefficient: 0.7}\n");
+  const auto config = LoadControllerConfig(directory.string(), vehicle_path.string());
+  std::filesystem::remove_all(directory);
+  EXPECT_FLOAT_EQ(config.vehicle.mass_kg, 3.0F);
+  EXPECT_EQ(config.vehicle.motor_pole_pairs, 2);
+  EXPECT_FLOAT_EQ(config.vehicle.min_current_a, -50.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.max_current_a, 50.0F);
+  EXPECT_FLOAT_EQ(config.vehicle.motor_to_wheel_ratio, 2.5F);
+  EXPECT_FLOAT_EQ(config.mppi.control_min[kSteering], -0.45F);
+  EXPECT_FLOAT_EQ(config.mppi.control_max[kSteering], 0.40F);
+}
+
 TEST(Config, DerivesRacelineCsvFromCurrentMapDirectory) {
   const auto directory = MakeOverlayConfig("xx_mppi_test_current_map_config");
   WriteFile(

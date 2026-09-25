@@ -18,10 +18,12 @@ namespace xxcar::mppi {
 
 MppiRosRuntime::MppiRosRuntime(
   rclcpp::Node & node, const std::string & config_directory,
+  const std::string & vehicle_config_file,
   const std::string & trajectory_topic, DirectControlConfig direct_control,
   VisualizationConfig visualization, CostTermsConfig cost_terms)
 : node_(node),
-  controller_(MppiControllerBuilder::FromConfigDirectory(config_directory)),
+  controller_(MppiControllerBuilder::FromConfigDirectory(
+      config_directory, vehicle_config_file)),
   direct_control_(std::move(direct_control)),
   visualization_(std::move(visualization)),
   cost_terms_(std::move(cost_terms))

@@ -30,6 +30,8 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
 {
   const auto config_directory = declare_parameter<std::string>(
     "config_directory", DefaultConfigDirectory());
+  const auto vehicle_config_file = declare_parameter<std::string>(
+    "vehicle_config_file", "");
   const auto yaml_defaults = LoadRosRuntimeConfig(config_directory);
   const auto state_topic = declare_parameter<std::string>("state_topic", "ekf/state");
   const auto trajectory_topic = declare_parameter<std::string>(
@@ -110,7 +112,8 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
   }
 
   runtime_ = std::make_unique<MppiRosRuntime>(
-    *this, config_directory, trajectory_topic, direct_control, std::move(visualization),
+    *this, config_directory, vehicle_config_file, trajectory_topic,
+    direct_control, std::move(visualization),
     std::move(cost_terms));
   state_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   scan_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

@@ -105,25 +105,62 @@ std::filesystem::path ResolveRaceline(
   return path;
 }
 
-void LoadVehicle(const YAML::Node & root, VehicleParameters & output) {
+void LoadVehicle(
+  const YAML::Node & root, VehicleParameters & output, MppiConfig & mppi)
+{
   const YAML::Node vehicle = root["vehicle"] ? root["vehicle"] : root;
+  const YAML::Node geometry = vehicle["geometry"];
+  const YAML::Node steering = vehicle["steering"];
+  const YAML::Node motor = vehicle["motor"];
+  const YAML::Node drivetrain = vehicle["drivetrain"];
+  const YAML::Node tires = vehicle["tires"];
   output.mass_kg = GetOr(vehicle, "mass_kg", output.mass_kg);
   output.yaw_inertia_kgm2 = GetOr(vehicle, "yaw_inertia_kgm2", output.yaw_inertia_kgm2);
-  output.cg_to_front_m = GetOr(vehicle, "cg_to_front_m", output.cg_to_front_m);
-  output.cg_to_rear_m = GetOr(vehicle, "cg_to_rear_m", output.cg_to_rear_m);
+  output.cg_to_front_m = GetOr(
+    geometry, "cg_to_front_m", GetOr(vehicle, "cg_to_front_m", output.cg_to_front_m));
+  output.cg_to_rear_m = GetOr(
+    geometry, "cg_to_rear_m", GetOr(vehicle, "cg_to_rear_m", output.cg_to_rear_m));
   output.front_cornering_stiffness_nprad = GetOr(
-    vehicle, "front_cornering_stiffness_nprad", output.front_cornering_stiffness_nprad);
+    tires, "front_cornering_stiffness_nprad",
+    GetOr(vehicle, "front_cornering_stiffness_nprad", output.front_cornering_stiffness_nprad));
   output.rear_cornering_stiffness_nprad = GetOr(
-    vehicle, "rear_cornering_stiffness_nprad", output.rear_cornering_stiffness_nprad);
+    tires, "rear_cornering_stiffness_nprad",
+    GetOr(vehicle, "rear_cornering_stiffness_nprad", output.rear_cornering_stiffness_nprad));
   output.front_friction_coefficient = GetOr(
-    vehicle, "front_friction_coefficient", output.front_friction_coefficient);
+    tires, "front_friction_coefficient",
+    GetOr(vehicle, "front_friction_coefficient", output.front_friction_coefficient));
   output.rear_friction_coefficient = GetOr(
-    vehicle, "rear_friction_coefficient", output.rear_friction_coefficient);
-  output.wheel_radius_m = GetOr(vehicle, "wheel_radius_m", output.wheel_radius_m);
+    tires, "rear_friction_coefficient",
+    GetOr(vehicle, "rear_friction_coefficient", output.rear_friction_coefficient));
+  output.wheel_radius_m = GetOr(
+    tires, "wheel_radius_m", GetOr(vehicle, "wheel_radius_m", output.wheel_radius_m));
   output.driven_wheel_inertia_kgm2 = GetOr(
-    vehicle, "driven_wheel_inertia_kgm2", output.driven_wheel_inertia_kgm2);
-  output.front_brake_bias = GetOr(vehicle, "front_brake_bias", output.front_brake_bias);
-  output.locked_awd = GetOr(vehicle, "locked_awd", output.locked_awd);
+    drivetrain, "driven_wheel_inertia_kgm2",
+    GetOr(vehicle, "driven_wheel_inertia_kgm2", output.driven_wheel_inertia_kgm2));
+  output.front_brake_bias = GetOr(
+    drivetrain, "front_brake_bias", GetOr(vehicle, "front_brake_bias", output.front_brake_bias));
+  output.locked_awd = GetOr(
+    drivetrain, "locked_awd", GetOr(vehicle, "locked_awd", output.locked_awd));
+  output.motor_pole_pairs = GetOr(motor, "pole_pairs", output.motor_pole_pairs);
+  output.min_current_a = GetOr(motor, "min_current_a", output.min_current_a);
+  output.max_current_a = GetOr(motor, "max_current_a", output.max_current_a);
+  output.motor_to_wheel_ratio = GetOr(
+    drivetrain, "motor_to_wheel_ratio", output.motor_to_wheel_ratio);
+
+  if (steering) {
+    output.min_steering_angle_rad = GetOr(
+      steering, "min_angle_rad", output.min_steering_angle_rad);
+    output.max_steering_angle_rad = GetOr(
+      steering, "max_angle_rad", output.max_steering_angle_rad);
+    output.rear_min_steering_angle_rad = GetOr(
+      steering, "rear_min_angle_rad", output.rear_min_steering_angle_rad);
+    output.rear_max_steering_angle_rad = GetOr(
+      steering, "rear_max_angle_rad", output.rear_max_steering_angle_rad);
+    mppi.control_min[kSteering] = output.min_steering_angle_rad;
+    mppi.control_max[kSteering] = output.max_steering_angle_rad;
+    mppi.control_min[kRearSteering] = output.rear_min_steering_angle_rad;
+    mppi.control_max[kRearSteering] = output.rear_max_steering_angle_rad;
+  }
 }
 
 void LoadNamedStateWeights(const YAML::Node & node, CostWeights & weights) {
@@ -141,7 +178,9 @@ void LoadNamedStateWeights(const YAML::Node & node, CostWeights & weights) {
 
 }  // namespace
 
-ControllerConfig LoadControllerConfig(const std::string & config_directory) {
+ControllerConfig LoadControllerConfig(
+  const std::string & config_directory, const std::string & vehicle_config_file)
+{
   const std::filesystem::path directory(config_directory);
   if (!std::filesystem::is_directory(directory)) {
     throw std::runtime_error("config directory does not exist: " + config_directory);
@@ -361,11 +400,15 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     directory, GetOr(model_yaml, "neural_model_path", std::string{})).string();
   config.projection_window_m = GetOr(
     model_yaml, "projection_window_m", config.projection_window_m);
-  if (model_yaml["vehicle_params_path"]) {
+  if (!vehicle_config_file.empty()) {
+    LoadVehicle(
+      YAML::LoadFile(Resolve(directory, vehicle_config_file).string()), config.vehicle, config.mppi);
+  } else if (model_yaml["vehicle_params_path"]) {
     LoadVehicle(YAML::LoadFile(Resolve(
-      directory, model_yaml["vehicle_params_path"].as<std::string>()).string()), config.vehicle);
+      directory, model_yaml["vehicle_params_path"].as<std::string>()).string()),
+      config.vehicle, config.mppi);
   } else {
-    LoadVehicle(model_yaml, config.vehicle);
+    LoadVehicle(model_yaml, config.vehicle, config.mppi);
   }
 
   LoadNamedStateWeights(weights_yaml["reference_tracking"], config.costs);
@@ -513,7 +556,11 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     !(config.vehicle.mass_kg > 0.0F) || !(config.vehicle.yaw_inertia_kgm2 > 0.0F) ||
     !(config.vehicle.wheel_radius_m > 0.0F) ||
     !(config.vehicle.driven_wheel_inertia_kgm2 > 0.0F) ||
-    !(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m > 0.0F))
+    !(config.vehicle.cg_to_front_m + config.vehicle.cg_to_rear_m > 0.0F) ||
+    config.vehicle.motor_pole_pairs <= 0 ||
+    !(config.vehicle.min_current_a < config.vehicle.max_current_a) ||
+    !(config.vehicle.min_steering_angle_rad < config.vehicle.max_steering_angle_rad) ||
+    !(config.vehicle.motor_to_wheel_ratio > 0.0F))
   {
     throw std::runtime_error("invalid cost or vehicle physical parameters");
   }

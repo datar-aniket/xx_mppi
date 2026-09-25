@@ -40,6 +40,8 @@ struct ControllerConfig {
   std::uint32_t num_rollouts{15U};
 };
 
-ControllerConfig LoadControllerConfig(const std::string & config_directory);
+ControllerConfig LoadControllerConfig(
+  const std::string & config_directory,
+  const std::string & vehicle_config_file = {});
 
 }  // namespace xxcar::mppi

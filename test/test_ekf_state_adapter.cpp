@@ -28,11 +28,11 @@ EkfState ValidMessage() {
   message.angular_velocity.z = 0.2;
   message.linear_acceleration.x = 0.3;
   message.side_slip_rad = 0.1F;
-  // Raw VESC channels (motor amps, tacho counts/s) must not leak through.
-  message.wheel_torque_nm = 31.0F;
+  // Raw VESC channels (motor amps and ERPM) must not leak through.
+  message.motor_current_a = 31.0F;
   message.steering_angle = 0.4F;
-  message.motor_speed_ms = 2028.0F;
-  message.wheel_torque_measured_nm = 2.0F;
+  message.motor_speed_erpm = 2028.0F;
+  message.wheel_torque_nm = 2.0F;
   message.wheel_speed_mps = 5.5F;
   message.solution_status = static_cast<std::uint8_t>(
     EkfState::SOLUTION_STATUS_ATTITUDE_VALID |
@@ -159,7 +159,7 @@ TEST(EkfStatePipeline, ProjectsConvertedEnuPoseIntoFrenetFrame) {
 
 TEST(EkfStateAdapter, RejectsUncalibratedDrivetrainFeedback) {
   auto message = ValidMessage();
-  message.wheel_torque_measured_nm = std::numeric_limits<float>::quiet_NaN();
+  message.wheel_torque_nm = std::numeric_limits<float>::quiet_NaN();
   EXPECT_THROW(
     {
       const auto observation = ToVehicleObservation(message);

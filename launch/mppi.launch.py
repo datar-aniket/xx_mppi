@@ -17,6 +17,7 @@ def _parse_bool(value):
 def _launch_node(context):
     parameters = {
         "config_directory": LaunchConfiguration("config_directory"),
+        "vehicle_config_file": LaunchConfiguration("vehicle_config_file"),
         "state_topic": LaunchConfiguration("state_topic"),
         "trajectory_topic": LaunchConfiguration("trajectory_topic"),
         "scan_topic": LaunchConfiguration("scan_topic"),
@@ -80,6 +81,7 @@ def generate_launch_description():
     default_config = PathJoinSubstitution([FindPackageShare("xx_mppi"), "config"])
     arguments = [
         DeclareLaunchArgument("config_directory", default_value=default_config),
+        DeclareLaunchArgument("vehicle_config_file", default_value=""),
         DeclareLaunchArgument("state_topic", default_value="ekf/state"),
         DeclareLaunchArgument(
             "trajectory_topic", default_value="vehicle_control_trajectory"
