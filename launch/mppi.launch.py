@@ -1,6 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -12,6 +12,17 @@ def _parse_bool(value):
     if normalized in ("false", "0", "no", "off"):
         return False
     raise ValueError(f"expected a boolean launch value, got '{value}'")
+
+
+def _check_robot_name(context):
+    """Fail fast if robot_name is unset, before config_directory resolves to
+    a nonexistent robotixx_calibration/config//mppi path."""
+    if not LaunchConfiguration("robot_name").perform(context):
+        raise RuntimeError(
+            "[mppi.launch.py] robot_name not set. Pass robot_name:=<name> "
+            "or export ROBOT_NAME=<name> (e.g. 'carxx')."
+        )
+    return []
 
 
 def _launch_node(context):
@@ -77,8 +88,18 @@ def generate_launch_description():
     # Resolve through the ament index so this works for both normal and
     # --symlink-install workspaces. Paths inside model.yaml are subsequently
     # resolved relative to this directory by the controller config loader.
-    default_config = PathJoinSubstitution([FindPackageShare("xx_mppi"), "config"])
+    default_config = PathJoinSubstitution([
+        FindPackageShare("robotixx_calibration"), "config",
+        LaunchConfiguration("robot_name"), "mppi",
+    ])
     arguments = [
+        DeclareLaunchArgument(
+            "robot_name",
+            default_value=EnvironmentVariable("ROBOT_NAME", default_value=""),
+            description="Robot config folder key under robotixx_calibration's "
+                        "config/<robot_name>/mppi/ (e.g. 'carxx'). Set via "
+                        "robot_name:=<name> or $ROBOT_NAME.",
+        ),
         DeclareLaunchArgument("config_directory", default_value=default_config),
         DeclareLaunchArgument("state_topic", default_value="ekf/state"),
         DeclareLaunchArgument(
@@ -131,4 +152,9 @@ def generate_launch_description():
             "cost_terms_topic", default_value="xx_mppi/cost_terms"
         ),
     ]
-    return LaunchDescription(arguments + [OpaqueFunction(function=_launch_node)])
+    return LaunchDescription(
+        arguments + [
+            OpaqueFunction(function=_check_robot_name),
+            OpaqueFunction(function=_launch_node),
+        ]
+    )

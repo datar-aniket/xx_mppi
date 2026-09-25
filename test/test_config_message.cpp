@@ -34,6 +34,8 @@ TEST(Config, LoadsRuntimeProblemAndPhysicalControlBounds) {
   EXPECT_GE(config.costs.longitudinal_deceleration, 0.0F);
   EXPECT_GE(config.costs.control_rate[kSteering], 0.0F);
   EXPECT_GE(config.costs.control_rate[kWheelTorque], 0.0F);
+  EXPECT_GT(config.mppi.control_rate_limit[kSteering], 0.0F);
+  EXPECT_GE(config.mppi.control_rate_limit[kWheelTorque], 0.0F);
   EXPECT_GT(config.info_log_rate_hz, 0.0F);
   EXPECT_GT(config.obstacles.confirmation_updates, 0U);
   EXPECT_GE(

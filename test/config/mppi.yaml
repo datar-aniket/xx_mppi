@@ -1,10 +1,10 @@
 # Jetson Orin NX target. K/T/dt are compile-independent runtime dimensions;
 # changing them reallocates persistent CUDA buffers but does not alter messages.
 num_samples: 4001
-horizon: 60
+horizon: 35
 dt: 0.1
-solve_rate_hz: 180.0
-control_publish_rate_hz: 180.0  # publish only the newest completed solution
+solve_rate_hz: 100.0
+control_publish_rate_hz: 50.0  # publish only the newest completed solution
 maximum_solution_age_s: 0.4    # zero disables the stale-command guard
 info_log_rate_hz: 10.0          # terminal ROS info summary of latest command
 visualization_rate_hz: 20.0  # reduced-rate RViz publishing and rollout snapshots
@@ -22,7 +22,7 @@ integrator: euler
 # I / (r^2 C), which is 0.039 s for the current vehicle profile. Startup fails
 # with the required value if this is too coarse. On this map the cost is under
 # 1 ms per solve because the rollout is dominated by the reference lookups.
-integration_substeps: 8
+integration_substeps: 20
 lambda: 2.0
 seed: 0
 
@@ -38,9 +38,9 @@ direct_control_topic: direct_control
 # duty_cycle: scale/clamp the torque below into a raw throttle instead.
 control_mode: torque
 # Used only by control_mode duty_cycle.
-direct_control_torque_to_throttle_scale: 50.0
-direct_control_throttle_min: -50.0
-direct_control_throttle_max: 50.0
+direct_control_torque_to_throttle_scale: 1.0
+direct_control_throttle_min: -2.0
+direct_control_throttle_max: 2.0
 # MPPI steering is positive-left. Set -1.0 when the actuator chain downstream of
 # cmd_vel is positive-right (PID_lanekeeping compensates with invert_steering).
 direct_control_steering_scale: 1.0
@@ -63,18 +63,29 @@ observation:
 # Config load pins this channel anyway whenever the selected model does not
 # steer the rear axle.
 sigma:
-  steering_angle_rad: 0.15
-  wheel_torque_nm: 0.3
-  rear_steering_angle_rad: 0.0
+  steering_angle_rad: 0.1
+  wheel_torque_nm: 0.5
+  rear_steering_angle_rad: 0.1
 
 # Provisional torque bounds pending final vehicle characterization.
 control_bounds:
-  min: {steering_angle_rad: -0.4, wheel_torque_nm: -1.0, rear_steering_angle_rad: 0.0}
-  max: {steering_angle_rad:  0.4, wheel_torque_nm: 0.8, rear_steering_angle_rad: 0.0}
+  min: {steering_angle_rad: -0.42, wheel_torque_nm: -2.0, rear_steering_angle_rad: -0.3}
+  max: {steering_angle_rad:  0.42, wheel_torque_nm: 2.0, rear_steering_angle_rad: 0.3}
 
-noise_smoothing_window: 7
+# Hard slew limits [unit/s]; zero leaves a channel unlimited. Every sampled
+# sequence is clamped so consecutive controls differ by at most limit * dt,
+# starting from the last published command, and the published command stream
+# is limited against the time actually elapsed between publications. Steering
+# values are the median peak wheel rates from the servo step test in
+# xxCAR_bringup/calibration/steering_calibration.yaml (steps >= 0.2 rad).
+control_rate_limits:
+  steering_angle_radps: 5.4
+  wheel_torque_nmps: 50.0
+  rear_steering_angle_radps: 5.6
+
+noise_smoothing_window: 5
 control_delay_steps: 0
-control_cost_gamma: 0.8
+control_cost_gamma: 0.5
 special_samples: true
 use_reference_controls: false
 expected_trajectory: true
@@ -84,7 +95,7 @@ adaptation:
   ess_fraction_min: 0.002
   ess_fraction_max: 0.05
   lambda_min: 200
-  lambda_max: 10000.0
+  lambda_max: 50000.0
   adaptive_sigma: true
   sigma_alpha: 0.1
   sigma_scale_min: 0.5

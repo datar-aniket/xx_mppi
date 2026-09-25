@@ -1,0 +1,35 @@
+# Carxx physical vehicle parameters shared by bringup, ekf_mcu_driver, and
+# xx_mppi. Values marked as estimates should be re-identified on this robot.
+vehicle:
+  mass_kg: 2.465
+  yaw_inertia_kgm2: 0.0305
+
+  geometry:
+    cg_to_front_m: 0.13
+    cg_to_rear_m: 0.13
+
+  steering:
+    min_angle_rad: -0.42
+    max_angle_rad: 0.42
+    rear_min_angle_rad: -0.3
+    rear_max_angle_rad: 0.3
+
+  motor:
+    # Four magnetic motor poles = two pole pairs. Mechanical RPM = ERPM / 2.
+    pole_pairs: 2
+    min_current_a: -120.0
+    max_current_a: 120.0
+
+  drivetrain:
+    # Legacy estimate from wheel radius and tacho distance calibration.
+    motor_to_wheel_ratio: 9.5 # 2.85*70/21 = 9.5 gear ratio
+    driven_wheel_inertia_kgm2: 0.0005
+    locked_awd: true
+    front_brake_bias: 0.5
+
+  tires:
+    wheel_radius_m: 0.031
+    front_cornering_stiffness_nprad: 150.0
+    rear_cornering_stiffness_nprad: 150.0
+    front_friction_coefficient: 0.7
+    rear_friction_coefficient: 0.7

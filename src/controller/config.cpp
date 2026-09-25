@@ -105,25 +105,40 @@ std::filesystem::path ResolveRaceline(
   return path;
 }
 
+// Reads a vehicle parameter from its group in the nested robotixx_calibration
+// layout (geometry/tires/drivetrain), falling back to the flat layout where
+// every parameter sits directly under vehicle.
+template<typename T>
+T GetGroupedOr(
+  const YAML::Node & vehicle, const char * group, const char * key, const T & fallback)
+{
+  return GetOr(vehicle[group], key, GetOr(vehicle, key, fallback));
+}
+
 void LoadVehicle(const YAML::Node & root, VehicleParameters & output) {
   const YAML::Node vehicle = root["vehicle"] ? root["vehicle"] : root;
   output.mass_kg = GetOr(vehicle, "mass_kg", output.mass_kg);
   output.yaw_inertia_kgm2 = GetOr(vehicle, "yaw_inertia_kgm2", output.yaw_inertia_kgm2);
-  output.cg_to_front_m = GetOr(vehicle, "cg_to_front_m", output.cg_to_front_m);
-  output.cg_to_rear_m = GetOr(vehicle, "cg_to_rear_m", output.cg_to_rear_m);
-  output.front_cornering_stiffness_nprad = GetOr(
-    vehicle, "front_cornering_stiffness_nprad", output.front_cornering_stiffness_nprad);
-  output.rear_cornering_stiffness_nprad = GetOr(
-    vehicle, "rear_cornering_stiffness_nprad", output.rear_cornering_stiffness_nprad);
-  output.front_friction_coefficient = GetOr(
-    vehicle, "front_friction_coefficient", output.front_friction_coefficient);
-  output.rear_friction_coefficient = GetOr(
-    vehicle, "rear_friction_coefficient", output.rear_friction_coefficient);
-  output.wheel_radius_m = GetOr(vehicle, "wheel_radius_m", output.wheel_radius_m);
-  output.driven_wheel_inertia_kgm2 = GetOr(
-    vehicle, "driven_wheel_inertia_kgm2", output.driven_wheel_inertia_kgm2);
-  output.front_brake_bias = GetOr(vehicle, "front_brake_bias", output.front_brake_bias);
-  output.locked_awd = GetOr(vehicle, "locked_awd", output.locked_awd);
+  output.cg_to_front_m = GetGroupedOr(
+    vehicle, "geometry", "cg_to_front_m", output.cg_to_front_m);
+  output.cg_to_rear_m = GetGroupedOr(
+    vehicle, "geometry", "cg_to_rear_m", output.cg_to_rear_m);
+  output.front_cornering_stiffness_nprad = GetGroupedOr(
+    vehicle, "tires", "front_cornering_stiffness_nprad",
+    output.front_cornering_stiffness_nprad);
+  output.rear_cornering_stiffness_nprad = GetGroupedOr(
+    vehicle, "tires", "rear_cornering_stiffness_nprad", output.rear_cornering_stiffness_nprad);
+  output.front_friction_coefficient = GetGroupedOr(
+    vehicle, "tires", "front_friction_coefficient", output.front_friction_coefficient);
+  output.rear_friction_coefficient = GetGroupedOr(
+    vehicle, "tires", "rear_friction_coefficient", output.rear_friction_coefficient);
+  output.wheel_radius_m = GetGroupedOr(
+    vehicle, "tires", "wheel_radius_m", output.wheel_radius_m);
+  output.driven_wheel_inertia_kgm2 = GetGroupedOr(
+    vehicle, "drivetrain", "driven_wheel_inertia_kgm2", output.driven_wheel_inertia_kgm2);
+  output.front_brake_bias = GetGroupedOr(
+    vehicle, "drivetrain", "front_brake_bias", output.front_brake_bias);
+  output.locked_awd = GetGroupedOr(vehicle, "drivetrain", "locked_awd", output.locked_awd);
 }
 
 void LoadNamedStateWeights(const YAML::Node & node, CostWeights & weights) {

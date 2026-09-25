@@ -192,7 +192,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_config_message test/test_config_message.cpp)
   target_link_libraries(test_config_message xx_mppi_ros)
   target_compile_definitions(test_config_message PRIVATE
-    XX_MPPI_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+    XX_MPPI_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/config")
   file(RELATIVE_PATH XX_MPPI_TEST_CURRENT_MAP_NAME
     "$ENV{HOME}/map" "${CMAKE_CURRENT_SOURCE_DIR}/test/current_map")
   set_tests_properties(test_config_message PROPERTIES
