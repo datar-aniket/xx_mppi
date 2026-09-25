@@ -92,6 +92,11 @@ class MppiRosRuntime {
   std::condition_variable control_cv_;
   std::optional<VehicleObservation> latest_observation_;
   std::optional<Control> pending_published_control_;
+  // Last command actually sent and when, for the output slew limit. Touched
+  // only by the control publication thread. Deliberately kept across Reset:
+  // the servo is still wherever that command put it.
+  std::optional<Control> last_sent_control_;
+  std::int64_t last_sent_time_ns_{};
   std::uint64_t observation_generation_{};
   std::uint64_t solved_generation_{};
   std::uint64_t reset_epoch_{};

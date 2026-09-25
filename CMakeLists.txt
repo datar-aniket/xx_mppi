@@ -184,6 +184,11 @@ if(BUILD_TESTING)
   target_compile_definitions(test_dynamics_costs PRIVATE
     XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
 
+  ament_add_gtest(test_control_rate_limit test/test_control_rate_limit.cpp)
+  target_link_libraries(test_control_rate_limit xx_mppi_core)
+  target_compile_definitions(test_control_rate_limit PRIVATE
+    XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
   ament_add_gtest(test_config_message test/test_config_message.cpp)
   target_link_libraries(test_config_message xx_mppi_ros)
   target_compile_definitions(test_config_message PRIVATE

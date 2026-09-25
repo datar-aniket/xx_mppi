@@ -243,6 +243,13 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     config.mppi.control_max[kRearSteering] = GetOr(
       bounds["max"], "rear_steering_angle_rad", config.mppi.control_max[kRearSteering]);
   }
+  const auto rate_limits = mppi_yaml["control_rate_limits"];
+  config.mppi.control_rate_limit[kSteering] = GetOr(
+    rate_limits, "steering_angle_radps", config.mppi.control_rate_limit[kSteering]);
+  config.mppi.control_rate_limit[kWheelTorque] = GetOr(
+    rate_limits, "wheel_torque_nmps", config.mppi.control_rate_limit[kWheelTorque]);
+  config.mppi.control_rate_limit[kRearSteering] = GetOr(
+    rate_limits, "rear_steering_angle_radps", config.mppi.control_rate_limit[kRearSteering]);
   const auto adaptation = mppi_yaml["adaptation"];
   config.mppi.adaptation.adaptive_lambda = GetOr(
     adaptation, "adaptive_lambda", config.mppi.adaptation.adaptive_lambda);
@@ -422,6 +429,11 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
       !std::isfinite(config.costs.control_rate[i]) || config.costs.control_rate[i] < 0.0F)
     {
       throw std::runtime_error("invalid control bounds or sampling sigma");
+    }
+    if (!std::isfinite(config.mppi.control_rate_limit[i]) ||
+      config.mppi.control_rate_limit[i] < 0.0F)
+    {
+      throw std::runtime_error("control rate limits must be finite and non-negative");
     }
     // A channel is either active (samples within a real interval) or pinned
     // (never sampled, clamped to exactly zero). Half-pinned states — zero sigma

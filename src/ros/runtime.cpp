@@ -659,6 +659,24 @@ void MppiRosRuntime::ControlPublicationCallback() {
     return;
   }
 
+  const auto & rate_limit = controller_->config().mppi.control_rate_limit;
+  if (last_sent_control_ && !solution->controls.empty()) {
+    const float elapsed_s = static_cast<float>(
+      publication_time.nanoseconds() - last_sent_time_ns_) * 1.0e-9F;
+    const Control & planned = solution->controls.front();
+    const Control limited = SlewLimitControl(
+      planned, *last_sent_control_, elapsed_s, rate_limit);
+    bool changed = false;
+    for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+      changed = changed || limited[channel] != planned[channel];
+    }
+    if (changed) {
+      auto copy = std::make_shared<PlannedTrajectory>(*solution);
+      copy->controls.front() = limited;
+      solution = std::move(copy);
+    }
+  }
+
   try {
     if (direct_control_.four_wheel && direct_control_.enabled) {
       four_wheel_control_publisher_->publish(
@@ -677,6 +695,10 @@ void MppiRosRuntime::ControlPublicationCallback() {
   if (!solution->controls.empty()) {
     std::lock_guard<std::mutex> lock(worker_mutex_);
     pending_published_control_ = solution->controls.front();
+  }
+  if (!solution->controls.empty()) {
+    last_sent_control_ = solution->controls.front();
+    last_sent_time_ns_ = publication_time.nanoseconds();
   }
   {
     std::lock_guard<std::mutex> lock(solution_mutex_);

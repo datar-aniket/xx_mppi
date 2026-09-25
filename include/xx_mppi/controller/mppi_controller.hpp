@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -58,6 +59,14 @@ struct PlannedTrajectory {
 // passed through so the caller's finite check rejects the sample.
 [[nodiscard]] float ConditionedSideslip(
   float measured_sideslip_rad, float speed_mps, float maximum_rad) noexcept;
+
+// Moves each channel of target toward it from previous by at most
+// limit * elapsed_s. A zero limit leaves that channel unlimited. The solver
+// bounds every dt step of a plan, but a fresh plan arrives every solve, so the
+// published command stream is limited here against the time actually elapsed.
+[[nodiscard]] Control SlewLimitControl(
+  const Control & target, const Control & previous, float elapsed_s,
+  const std::array<float, kControlDim> & limit) noexcept;
 
 class MppiController {
  public:

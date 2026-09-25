@@ -122,6 +122,8 @@ struct DeviceMppi {
   float sigma[kControlDim];
   float control_min[kControlDim];
   float control_max[kControlDim];
+  float control_rate_limit[kControlDim];
+  bool rate_limited;
   float gamma;
   bool special_samples;
   bool use_reference_controls;
@@ -630,6 +632,38 @@ __global__ void BuildCandidates(
   const std::size_t candidate_index = sample * config.horizon + time;
   candidates[candidate_index][control_channel] = candidate;
   perturbations[candidate_index][control_channel] = candidate - nominal[time][control_channel];
+}
+
+// Clamps every candidate so consecutive controls differ by at most
+// limit * dt, starting from the previously published command. Runs after the
+// box clamp in BuildCandidates; the slew limit wins where the two disagree
+// (a prior outside the bounds), because the actuator cannot jump into them.
+// Perturbations are recomputed so the importance-sampling term and the
+// weighted update both see the sequence that was actually rolled out. The
+// weighted mean of sequences that share this prior is itself slew-limited.
+__global__ void LimitControlRate(
+  Control * candidates, Control * perturbations, const Control * nominal,
+  const Control previous_control, const DeviceMppi config)
+{
+  const std::uint32_t sample = blockIdx.x * blockDim.x + threadIdx.x;
+  if (sample >= config.samples) {
+    return;
+  }
+  const std::size_t base = static_cast<std::size_t>(sample) * config.horizon;
+  Control prior = previous_control;
+  for (std::uint16_t t = 0; t < config.horizon; ++t) {
+    Control & candidate = candidates[base + t];
+    for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+      const float limit = config.control_rate_limit[channel];
+      if (limit > 0.0F) {
+        const float step = limit * config.dt;
+        candidate[channel] = fminf(fmaxf(
+          candidate[channel], prior[channel] - step), prior[channel] + step);
+      }
+      perturbations[base + t][channel] = candidate[channel] - nominal[t][channel];
+    }
+    prior = candidate;
+  }
 }
 
 __global__ void RolloutAndCost(
@@ -1295,6 +1329,9 @@ class CudaMppiController::Impl {
       device_config_.sigma[i] = config_.sigma[i];
       device_config_.control_min[i] = config_.control_min[i];
       device_config_.control_max[i] = config_.control_max[i];
+      device_config_.control_rate_limit[i] = config_.control_rate_limit[i];
+      device_config_.rate_limited =
+        device_config_.rate_limited || config_.control_rate_limit[i] > 0.0F;
     }
 
     CheckCuda(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "cudaStreamCreate");
@@ -1538,6 +1575,10 @@ class CudaMppiController::Impl {
     BuildCandidates<<<static_cast<int>((candidate_values + 255U) / 256U), 256, 0, stream_>>>(
       raw_noise_, nominal_, reference_controls_, candidates_, perturbations_,
       initial_state, device_config_);
+    if (device_config_.rate_limited) {
+      LimitControlRate<<<sample_blocks, 256, 0, stream_>>>(
+        candidates_, perturbations_, nominal_, previous_control, device_config_);
+    }
     if (device_config_.model_kind == ModelKind::kTensorRtNeuralDerivative) {
       InitializeNeuralRollouts<<<sample_blocks, 256, 0, stream_>>>(
         initial_state, initial_path_s_m, neural_states_, trajectories_, costs_device_,

@@ -125,6 +125,11 @@ struct MppiConfig {
   std::array<float, kControlDim> sigma{0.10F, 1.0F, 0.0F};
   std::array<float, kControlDim> control_min{-0.5F, -5.0F, 0.0F};
   std::array<float, kControlDim> control_max{0.5F, 5.0F, 0.0F};
+  // Hard slew limit per channel [unit/s]; zero leaves the channel unlimited.
+  // Every candidate sequence is clamped step by step, starting from the
+  // previous command, so no two consecutive controls differ by more than
+  // limit * dt_s. The steering values come from the servo step test.
+  std::array<float, kControlDim> control_rate_limit{0.0F, 0.0F, 0.0F};
   std::uint16_t noise_smoothing_window{5};
   std::uint16_t control_delay_steps{0};
   float control_cost_gamma{0.8F};

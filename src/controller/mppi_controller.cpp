@@ -36,6 +36,22 @@ void MppiController::UpdateObstacleField(const ObstacleField & field) {
 
 void MppiController::ClearObstacleField() { optimizer_.ClearObstacleField(); }
 
+Control SlewLimitControl(
+  const Control & target, const Control & previous, const float elapsed_s,
+  const std::array<float, kControlDim> & limit) noexcept
+{
+  Control result = target;
+  const float elapsed = std::isfinite(elapsed_s) ? std::max(elapsed_s, 0.0F) : 0.0F;
+  for (std::size_t channel = 0; channel < kControlDim; ++channel) {
+    if (limit[channel] > 0.0F) {
+      const float step = limit[channel] * elapsed;
+      result[channel] = std::clamp(
+        target[channel], previous[channel] - step, previous[channel] + step);
+    }
+  }
+  return result;
+}
+
 // Warm-start reference for control smoothness/rate costs. EkfState provides
 // radians and newton-metres already, so preserve the feedback exactly. An
 // out-of-bound measured actuator state is meaningful: the first feasible
