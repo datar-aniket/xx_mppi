@@ -242,13 +242,18 @@ __device__ float SampleObstacleField(
   return lower + ty * (upper - lower);
 }
 
-__device__ float VehicleObstacleClearance(
+struct ObstacleClearance {
+  float footprint;
+  float forward;
+};
+
+__device__ ObstacleClearance VehicleObstacleClearances(
   const State & state, const FrenetView & frenet, const DeviceTrack & track,
   const DeviceObstacleField & field, const DeviceMppi & config,
   const DeviceCosts & weights)
 {
   if (!weights.obstacle_enabled || !field.valid) {
-    return weights.obstacle_maximum_distance;
+    return {weights.obstacle_maximum_distance, weights.obstacle_maximum_distance};
   }
   float center_east = state[kEastM];
   float center_north = state[kNorthM];
@@ -284,7 +289,12 @@ __device__ float VehicleObstacleClearance(
       weights.obstacle_maximum_distance) - radius;
     clearance = fminf(clearance, distance);
   }
-  return clearance;
+  const float front_offset = 0.5F * weights.footprint_length;
+  const float forward_clearance = SampleObstacleField(
+    field, center_east + front_offset * cosf(yaw),
+    center_north + front_offset * sinf(yaw), weights.obstacle_maximum_distance) -
+    0.5F * weights.footprint_width;
+  return {clearance, forward_clearance};
 }
 
 // Device twin of Raceline::Project restricted to a window of segments around
@@ -532,8 +542,9 @@ __device__ float StateCost(
     }
   }
   if (weights.obstacle_enabled && obstacle_field.valid) {
-    const float clearance = VehicleObstacleClearance(
+    const ObstacleClearance clearances = VehicleObstacleClearances(
       state, frenet, track, obstacle_field, config, weights);
+    const float clearance = clearances.footprint;
     const float deficit = fmaxf(weights.obstacle_influence_distance - clearance, 0.0F);
     AddCost<kBreakdown>(cost, terms, kTermObstacleDistance,
       weights.obstacle_distance * deficit * deficit);
@@ -541,7 +552,7 @@ __device__ float StateCost(
       terms->minimum_clearance_m = fminf(terms->minimum_clearance_m, clearance);
     }
     obstacle_latched = obstacle_latched ||
-      (latch_violations && clearance < weights.obstacle_latch_threshold);
+      (latch_violations && clearances.forward < weights.obstacle_latch_threshold);
     if (obstacle_latched) {
       AddCost<kBreakdown>(cost, terms, kTermObstacleLatching,
         weights.obstacle_latching / static_cast<float>(reference.horizon + 1U));

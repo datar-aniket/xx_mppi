@@ -38,8 +38,30 @@ float VehicleObstacleClearance(
   return clearance;
 }
 
+float VehicleForwardObstacleClearance(
+  const State & state, const Raceline & raceline, const ObstacleField & field,
+  const ObstacleConfig & config)
+{
+  if (!config.enabled || !field.valid()) {
+    return config.maximum_distance_m;
+  }
+  const auto center = raceline.ToCartesian(
+    state[kPathEvolution], state[kLateralDeviation]);
+  const auto track = raceline.Interpolate(state[kPathEvolution]);
+  const float body_heading_from_north = track.heading_from_north_rad +
+    state[kRelativeHeading] - state[kSideslip];
+  const float yaw = body_heading_from_north + 0.5F * 3.14159265358979323846F;
+  const float front_offset = 0.5F * config.footprint_length_m;
+  const float radius = 0.5F * config.footprint_width_m;
+  return SampleSignedDistance(
+    field, center.first + front_offset * std::cos(yaw),
+    center.second + front_offset * std::sin(yaw),
+    config.maximum_distance_m) - radius;
+}
+
 float EvaluateObstacleCost(
-  const float clearance_m, const ObstacleConfig & config, bool & latched,
+  const float clearance_m, const float forward_clearance_m,
+  const ObstacleConfig & config, bool & latched,
   const std::size_t horizon_states)
 {
   if (!config.enabled || horizon_states == 0U) {
@@ -47,7 +69,7 @@ float EvaluateObstacleCost(
   }
   const float deficit = std::max(config.influence_distance_m - clearance_m, 0.0F);
   float cost = config.distance_weight * deficit * deficit;
-  latched = latched || clearance_m < config.latch_threshold_m;
+  latched = latched || forward_clearance_m < config.latch_threshold_m;
   if (latched) {
     cost += config.latching_weight / static_cast<float>(horizon_states);
   }

@@ -121,9 +121,11 @@ float CostEvaluator::Evaluate(
     if (obstacle_field != nullptr && raceline != nullptr && obstacle_config != nullptr) {
       const float clearance = VehicleObstacleClearance(
         state, *raceline, *obstacle_field, *obstacle_config);
+      const float forward_clearance = VehicleForwardObstacleClearance(
+        state, *raceline, *obstacle_field, *obstacle_config);
       const bool latched_before = obstacle_latched;
       const float obstacle_cost = EvaluateObstacleCost(
-        clearance, *obstacle_config, obstacle_latched, states.size());
+        clearance, forward_clearance, *obstacle_config, obstacle_latched, states.size());
       // EvaluateObstacleCost returns the deficit and latching penalties summed.
       // The latching half is a constant per step, so splitting them back apart
       // needs no second copy of the deficit shaping.

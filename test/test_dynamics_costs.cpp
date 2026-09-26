@@ -6,6 +6,7 @@
 
 #include "xx_mppi/costs/map_boundary.hpp"
 #include "xx_mppi/costs/cost_evaluator.hpp"
+#include "xx_mppi/costs/obstacle_cost.hpp"
 #include "xx_mppi/dynamics/analytic_dynamics.hpp"
 #include "xx_mppi/dynamics/rollout.hpp"
 #include "xx_mppi/obstacles/signed_distance_field.hpp"
@@ -285,7 +286,7 @@ TEST(Costs, AddsAsymmetricAccelerationAndPhysicalControlRatePenalties) {
   EXPECT_NEAR(added, 38.75F, 1.0e-3F);
 }
 
-TEST(Costs, ObstacleDistanceAndLatchPenalizeBlockedTrajectory) {
+TEST(Costs, ObstacleDistancePenalizesBlockedTrajectory) {
   const auto raceline = Raceline::LoadCsv(TestCsv());
   const auto reference = raceline.Sample(0.0F, 5U, 0.1F);
   ObstacleConfig obstacle_config;
@@ -310,7 +311,79 @@ TEST(Costs, ObstacleDistanceAndLatchPenalizeBlockedTrajectory) {
   const float blocked_cost = evaluator.Evaluate(
     reference.states, reference.controls, reference, Control{},
     &blocked_field, &raceline, &obstacle_config);
-  EXPECT_GT(blocked_cost, clear_cost + 500.0F);
+  EXPECT_GT(blocked_cost, clear_cost + 10.0F);
+}
+
+TEST(Costs, ObstacleLatchRegionRejectsSideAndRearObstacles) {
+  const auto raceline = Raceline::LoadCsv(TestCsv());
+  const auto reference = raceline.Sample(0.0F, 5U, 0.1F);
+  const State state = reference.states.front();
+  ObstacleConfig config;
+  config.enabled = true;
+  config.grid_resolution_m = 0.01F;
+  config.grid_width_m = 4.0F;
+  config.grid_height_m = 4.0F;
+  config.maximum_distance_m = 2.0F;
+  config.obstacle_inflation_radius_m = 0.01F;
+  config.latch_threshold_m = 0.05F;
+  config.footprint_length_m = 0.65F;
+  config.footprint_width_m = 0.50F;
+  config.footprint_circles = 3U;
+  // The test raceline points north at s=0. Side and rear points intersect the
+  // conservative full footprint, but only the north/front point may latch.
+  const auto make_field = [&config](const Point2D point, const std::uint64_t generation) {
+      ObstacleField field;
+      field.generation = generation;
+      field.resolution_m = config.grid_resolution_m;
+      field.width = static_cast<std::uint32_t>(
+        std::ceil(config.grid_width_m / field.resolution_m));
+      field.height = static_cast<std::uint32_t>(
+        std::ceil(config.grid_height_m / field.resolution_m));
+      field.origin_east_m = -0.5F * config.grid_width_m;
+      field.origin_north_m = -0.5F * config.grid_height_m;
+      field.signed_distance_m.resize(
+        static_cast<std::size_t>(field.width) * field.height);
+      for (std::uint32_t y = 0; y < field.height; ++y) {
+        for (std::uint32_t x = 0; x < field.width; ++x) {
+          const float east = field.origin_east_m +
+            (static_cast<float>(x) + 0.5F) * field.resolution_m;
+          const float north = field.origin_north_m +
+            (static_cast<float>(y) + 0.5F) * field.resolution_m;
+          field.signed_distance_m[static_cast<std::size_t>(y) * field.width + x] =
+            std::hypot(east - point.east_m, north - point.north_m) -
+            config.obstacle_inflation_radius_m;
+        }
+      }
+      return field;
+    };
+  const auto front = make_field(Point2D{0.0F, 0.45F}, 1U);
+  const auto side = make_field(Point2D{0.30F, 0.0F}, 2U);
+  const auto rear = make_field(Point2D{0.0F, -0.45F}, 3U);
+
+  const auto vehicle_center = raceline.ToCartesian(
+    state[kPathEvolution], state[kLateralDeviation]);
+  EXPECT_NEAR(vehicle_center.first, 0.0F, 1.0e-5F);
+  EXPECT_NEAR(vehicle_center.second, 0.0F, 1.0e-5F);
+  const float front_full = VehicleObstacleClearance(state, raceline, front, config);
+  const float front_forward = VehicleForwardObstacleClearance(state, raceline, front, config);
+  const float side_full = VehicleObstacleClearance(state, raceline, side, config);
+  const float side_forward = VehicleForwardObstacleClearance(state, raceline, side, config);
+  const float rear_full = VehicleObstacleClearance(state, raceline, rear, config);
+  const float rear_forward = VehicleForwardObstacleClearance(state, raceline, rear, config);
+  EXPECT_LT(front_full, config.latch_threshold_m);
+  EXPECT_LT(front_forward, config.latch_threshold_m);
+  EXPECT_LT(side_full, config.latch_threshold_m);
+  EXPECT_GT(side_forward, config.latch_threshold_m);
+  EXPECT_LT(rear_full, config.latch_threshold_m);
+  EXPECT_GT(rear_forward, config.latch_threshold_m);
+
+  bool latched = false;
+  (void)EvaluateObstacleCost(side_full, side_forward, config, latched, 6U);
+  EXPECT_FALSE(latched);
+  (void)EvaluateObstacleCost(rear_full, rear_forward, config, latched, 6U);
+  EXPECT_FALSE(latched);
+  (void)EvaluateObstacleCost(front_full, front_forward, config, latched, 6U);
+  EXPECT_TRUE(latched);
 }
 
 // The decomposition is only useful if it accounts for the whole cost. A term

@@ -128,8 +128,11 @@ publish the first optimized MPPI control as `geometry_msgs/msg/Twist`:
 With `obstacle_latch_brake_enabled: true`, the CUDA rollout pass reports how
 many samples latch an obstacle within the first
 `obstacle_latch_brake_steps` predicted states. The obstacle cost still remains
-latched over the complete horizon, but a later predicted obstacle does not
-trigger the immediate brake. If the near-term count reaches `K`, the
+latched over the complete horizon, but only clearance in the forward safety
+region centered at the front bumper can set that latch. Obstacles beside or
+behind the vehicle retain normal full-footprint proximity cost without
+triggering the all-sample brake. A later predicted obstacle does not trigger
+the immediate brake. If the near-term count reaches `K`, the
 population must remain continuously all-latched for
 `obstacle_latch_brake_s` before the fallback engages. The publication worker
 then replaces the MPPI/SQP torque with `obstacle_latch_brake_torque_nm`, signed
@@ -137,7 +140,11 @@ opposite the measured mechanical motor RPM. Electrical RPM from `EkfState` is
 divided by the configured motor pole-pair count first. Braking engages only
 above `obstacle_latch_brake_motor_rpm_engage` and releases to exactly zero
 torque below `obstacle_latch_brake_motor_rpm_release`. Between those thresholds
-it retains its previous state, preventing command chatter. The explicit
+it retains its previous state and latched rotation direction, preventing
+command chatter. If RPM telemetry jumps directly across zero without observing
+the release region, the safety command disarms to zero for that update instead
+of reversing torque; only a later sample above the engage threshold may latch
+the new direction. The explicit
 `xxcar_msgs/DirectControl` command retains MPPI front/rear steering and
 `THROTTLE_TORQUE`, so normal and fallback commands use the same throttle type.
 Both signed torque bounds must accommodate the safety torque magnitude.

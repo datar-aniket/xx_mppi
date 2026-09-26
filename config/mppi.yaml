@@ -52,19 +52,19 @@ direct_control_four_wheel_topic: direct_control
 # opposite the measured mechanical motor RPM.
 # Only obstacle latches in these first predicted steps trigger the brake. The
 # obstacle cost remains latched over the complete optimization horizon.
-obstacle_latch_brake_steps: 1
+obstacle_latch_brake_steps: 5
 # Require a continuously latched population before engaging, suppressing a
 # single noisy solve. At or below the stop-speed threshold, return to MPPI even
 # if the near-term population remains latched.
-obstacle_latch_brake_enabled: false
-obstacle_latch_brake_s: 0.1
-obstacle_latch_brake_recovery_s: 2.0
+obstacle_latch_brake_enabled: true
+obstacle_latch_brake_s: 0.01
+obstacle_latch_brake_recovery_s: 0.4
 obstacle_latch_brake_stop_speed_mps: 0.05
 # Engage braking above 80 mechanical RPM and release below 50 RPM. Between the
 # thresholds, retain the previous brake state to prevent chatter.
 obstacle_latch_brake_torque_nm: 1.6
-obstacle_latch_brake_motor_rpm_release: 10.0
-obstacle_latch_brake_motor_rpm_engage: 100.0
+obstacle_latch_brake_motor_rpm_release: 5.0
+obstacle_latch_brake_motor_rpm_engage: 5000.0
 
 observation:
   # EkfState steering [rad], wheel torque [N m], wheel speed [m/s], and motor

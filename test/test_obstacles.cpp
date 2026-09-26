@@ -64,6 +64,21 @@ TEST(MotorBrakeHysteresis, UsesSeparateEngageAndReleaseRpmThresholds) {
   EXPECT_FLOAT_EQ(brake.Update(-49.0F), 0.0F);
 }
 
+TEST(MotorBrakeHysteresis, SignJumpDisarmsBeforeOppositeTorqueCanEngage) {
+  MotorBrakeHysteresis brake(1.6F, 50.0F, 80.0F);
+
+  EXPECT_FLOAT_EQ(brake.Update(100.0F), -1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(60.0F), -1.6F);
+  // A direct sign jump cannot produce a +3.2 Nm command transition.
+  EXPECT_FLOAT_EQ(brake.Update(-100.0F), 0.0F);
+  EXPECT_FALSE(brake.engaged());
+  // A later consistent sample may establish the new direction.
+  EXPECT_FLOAT_EQ(brake.Update(-100.0F), 1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(-60.0F), 1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(100.0F), 0.0F);
+  EXPECT_FALSE(brake.engaged());
+}
+
 TEST(PoseHistory, InterpolatesYawAcrossWrapAndPosition) {
   PoseHistory history(0.1F, 0.02F);
   history.Add(TimedVehiclePose{
