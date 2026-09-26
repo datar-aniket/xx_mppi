@@ -19,16 +19,16 @@ association_distance_m: 0.05
 pose_history_s: 0.50
 maximum_extrapolation_s: 0.02
 
-distance_weight: 300.0
+distance_weight: 100.0
 # distance_weight: 0.0
 influence_distance_m: 0.2
 # Exponential proximity scale and latch point. The latching penalty equals its
 # configured weight here, grows exponentially closer, and decays farther away.
 latch_threshold_m: 0.05
 # latching_weight: 0.0
-latching_weight: 80000.0
+latching_weight: 10000.0
 
 # Traxxas TRX-4 Sport bounding box represented conservatively by three circles.
-footprint_length_m: 0.60
-footprint_width_m: 0.4
+footprint_length_m: 0.65
+footprint_width_m: 0.5
 footprint_circles: 3

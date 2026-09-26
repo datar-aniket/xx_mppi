@@ -21,6 +21,8 @@ TEST(Config, LoadsRuntimeProblemAndPhysicalControlBounds) {
   const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
   EXPECT_GT(config.mppi.num_samples, 3U);
   EXPECT_GT(config.mppi.horizon, 0U);
+  EXPECT_GT(config.mppi.obstacle_latch_brake_steps, 0U);
+  EXPECT_LE(config.mppi.obstacle_latch_brake_steps, config.mppi.horizon);
   EXPECT_FLOAT_EQ(config.mppi.dt_s, 0.1F);
   EXPECT_LT(config.mppi.control_min[kSteering], 0.0F);
   EXPECT_GT(config.mppi.control_max[kSteering], 0.0F);
@@ -58,6 +60,7 @@ TEST(Config, LoadsConfiguredVehicleProfile) {
   EXPECT_GT(config.vehicle.front_cornering_stiffness_nprad, 0.0F);
   EXPECT_GT(config.vehicle.rear_cornering_stiffness_nprad, 0.0F);
   EXPECT_GT(config.vehicle.wheel_radius_m, 0.0F);
+  EXPECT_EQ(config.vehicle.motor_pole_pairs, 2);
   EXPECT_GE(config.vehicle.front_brake_bias, 0.0F);
   EXPECT_LE(config.vehicle.front_brake_bias, 1.0F);
   EXPECT_TRUE(config.vehicle.locked_awd);
@@ -258,6 +261,25 @@ TEST(Config, SelectsTheRolloutFrame) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(Config, ValidatesNearTermObstacleBrakeWindow) {
+  const auto directory = MakeOverlayConfig("xx_mppi_test_obstacle_brake_window");
+  const auto mppi_path = directory / "mppi.yaml";
+  std::ifstream original(mppi_path);
+  const std::string body(
+    (std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+  original.close();
+
+  WriteFile(mppi_path, "obstacle_latch_brake_steps: 0\n" + body);
+  EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+  WriteFile(
+    mppi_path, "horizon: 4\nobstacle_latch_brake_steps: 5\n" + body);
+  EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+  WriteFile(
+    mppi_path, "horizon: 5\nobstacle_latch_brake_steps: 5\n" + body);
+  EXPECT_NO_THROW((void)LoadControllerConfig(directory.string()));
+  std::filesystem::remove_all(directory);
+}
+
 TEST(Config, RejectsAnIntegrationStepTheDrivenWheelLoopCannotHold) {
   const auto directory = MakeOverlayConfig("xx_mppi_test_substep_config");
   const auto mppi_path = directory / "mppi.yaml";
@@ -325,6 +347,14 @@ TEST(Config, LoadsRosSafetyAndDirectControlDefaults) {
   EXPECT_TRUE(std::isfinite(config.direct_control.throttle_min));
   EXPECT_TRUE(std::isfinite(config.direct_control.throttle_max));
   EXPECT_LE(config.direct_control.throttle_min, config.direct_control.throttle_max);
+  EXPECT_GT(config.direct_control.obstacle_brake_activation_s, 0.0F);
+  EXPECT_GT(config.direct_control.obstacle_brake_recovery_s, 0.0F);
+  EXPECT_GE(config.direct_control.obstacle_brake_stop_speed_mps, 0.0F);
+  EXPECT_GT(config.direct_control.obstacle_brake_torque_nm, 0.0F);
+  EXPECT_GE(config.direct_control.obstacle_brake_motor_rpm_release, 0.0F);
+  EXPECT_GT(
+    config.direct_control.obstacle_brake_motor_rpm_engage,
+    config.direct_control.obstacle_brake_motor_rpm_release);
 }
 
 TEST(RosMessage, PreservesTimestampAndTTAlignment) {
@@ -386,6 +416,51 @@ TEST(DirectControlMessage, TorqueModePassesWheelTorqueWithoutMappingOrClamp) {
   const auto message = ToDirectControlMessage(trajectory, config, rclcpp::Time(0, 0));
   EXPECT_NEAR(message.throttle, 2.75F, 1.0e-6F);
   EXPECT_EQ(message.throttle_type, xxcar_msgs::msg::DirectControl::THROTTLE_TORQUE);
+}
+
+TEST(DirectControlMessage, ObstacleBrakeUsesSafetyTorqueWithoutModeChange) {
+  PlannedTrajectory trajectory;
+  trajectory.controls = {Control{{0.25F, 2.75F, -0.10F}}};
+  DirectControlConfig config;
+  config.mode = DirectControlMode::kTorque;
+  config.four_wheel = true;
+  config.steering_scale = 1.0F;
+  config.steering_limit_rad = 1.0F;
+
+  const auto message = ToSafetyTorqueMessage(
+    trajectory, config, -1.6F, rclcpp::Time(2, 3));
+  EXPECT_FLOAT_EQ(message.steering_angle_rad, 0.25F);
+  EXPECT_FLOAT_EQ(message.rear_steering_angle_rad, -0.10F);
+  EXPECT_FLOAT_EQ(message.throttle, -1.6F);
+  EXPECT_EQ(message.throttle_type, xxcar_msgs::msg::DirectControl::THROTTLE_TORQUE);
+
+  // The fallback and recovered MPPI command use the same torque mode.
+  EXPECT_EQ(config.mode, DirectControlMode::kTorque);
+  const auto recovered = ToDirectControlMessage(trajectory, config, rclcpp::Time(3, 4));
+  EXPECT_FLOAT_EQ(recovered.throttle, 2.75F);
+  EXPECT_EQ(recovered.throttle_type, xxcar_msgs::msg::DirectControl::THROTTLE_TORQUE);
+}
+
+TEST(DirectControlMessage, ObstacleBrakeRequiresTypedDirectControlTransport) {
+  DirectControlConfig config;
+  config.obstacle_brake_enabled = true;
+  EXPECT_THROW(ValidateDirectControlConfig(config), std::invalid_argument);
+  config.enabled = true;
+  config.four_wheel = true;
+  config.mode = DirectControlMode::kTorque;
+  EXPECT_NO_THROW(ValidateDirectControlConfig(config));
+  config.obstacle_brake_activation_s = 0.0F;
+  EXPECT_THROW(ValidateDirectControlConfig(config), std::invalid_argument);
+  config.obstacle_brake_activation_s = 0.5F;
+  config.obstacle_brake_recovery_s = 0.0F;
+  EXPECT_THROW(ValidateDirectControlConfig(config), std::invalid_argument);
+  config.obstacle_brake_recovery_s = 0.5F;
+  config.obstacle_brake_stop_speed_mps = -0.01F;
+  EXPECT_THROW(ValidateDirectControlConfig(config), std::invalid_argument);
+  config.obstacle_brake_stop_speed_mps = 0.05F;
+  config.obstacle_brake_motor_rpm_release = 80.0F;
+  config.obstacle_brake_motor_rpm_engage = 80.0F;
+  EXPECT_THROW(ValidateDirectControlConfig(config), std::invalid_argument);
 }
 
 // A Twist cannot mark its throttle as a torque, so the driver would apply N m

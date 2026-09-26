@@ -20,6 +20,8 @@
 #include "xx_mppi/ros/cost_terms_message.hpp"
 #include "xx_mppi/ros/direct_control_message.hpp"
 #include "xx_mppi/ros/visualization.hpp"
+#include "xx_mppi/safety/obstacle_brake_latch.hpp"
+#include "xx_mppi/safety/motor_brake_hysteresis.hpp"
 
 namespace xxcar::mppi {
 
@@ -71,6 +73,9 @@ class MppiRosRuntime {
   rclcpp::Node & node_;
   std::unique_ptr<MppiController> controller_;
   DirectControlConfig direct_control_;
+  std::mutex obstacle_brake_mutex_;
+  ObstacleBrakeLatch obstacle_brake_latch_;
+  MotorBrakeHysteresis motor_brake_hysteresis_;
   rclcpp::Publisher<xxcar_msgs::msg::VehicleControlTrajectory>::SharedPtr trajectory_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr direct_control_publisher_;
   rclcpp::Publisher<xxcar_msgs::msg::DirectControl>::SharedPtr four_wheel_control_publisher_;

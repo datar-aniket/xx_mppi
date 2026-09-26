@@ -48,6 +48,25 @@ RosRuntimeConfig LoadRosRuntimeConfig(const std::string & config_directory) {
     yaml, "direct_control_four_wheel", config.direct_control.four_wheel);
   config.direct_control.four_wheel_topic = GetOr(
     yaml, "direct_control_four_wheel_topic", config.direct_control.four_wheel_topic);
+  config.direct_control.obstacle_brake_enabled = GetOr(
+    yaml, "obstacle_latch_brake_enabled", config.direct_control.obstacle_brake_enabled);
+  config.direct_control.obstacle_brake_activation_s = GetOr(
+    yaml, "obstacle_latch_brake_s", config.direct_control.obstacle_brake_activation_s);
+  config.direct_control.obstacle_brake_recovery_s = GetOr(
+    yaml, "obstacle_latch_brake_recovery_s",
+    config.direct_control.obstacle_brake_recovery_s);
+  config.direct_control.obstacle_brake_stop_speed_mps = GetOr(
+    yaml, "obstacle_latch_brake_stop_speed_mps",
+    config.direct_control.obstacle_brake_stop_speed_mps);
+  config.direct_control.obstacle_brake_torque_nm = GetOr(
+    yaml, "obstacle_latch_brake_torque_nm",
+    config.direct_control.obstacle_brake_torque_nm);
+  config.direct_control.obstacle_brake_motor_rpm_release = GetOr(
+    yaml, "obstacle_latch_brake_motor_rpm_release",
+    config.direct_control.obstacle_brake_motor_rpm_release);
+  config.direct_control.obstacle_brake_motor_rpm_engage = GetOr(
+    yaml, "obstacle_latch_brake_motor_rpm_engage",
+    config.direct_control.obstacle_brake_motor_rpm_engage);
   ValidateDirectControlConfig(config.direct_control);
   return config;
 }

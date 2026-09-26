@@ -57,6 +57,13 @@ def _launch_node(context):
         "direct_control_throttle_max": float,
         "direct_control_steering_scale": float,
         "direct_control_steering_limit_rad": float,
+        "obstacle_latch_brake_enabled": _parse_bool,
+        "obstacle_latch_brake_s": float,
+        "obstacle_latch_brake_recovery_s": float,
+        "obstacle_latch_brake_stop_speed_mps": float,
+        "obstacle_latch_brake_torque_nm": float,
+        "obstacle_latch_brake_motor_rpm_release": float,
+        "obstacle_latch_brake_motor_rpm_engage": float,
     }
     for name, convert in yaml_overrides.items():
         value = LaunchConfiguration(name).perform(context)
@@ -100,6 +107,17 @@ def generate_launch_description():
         DeclareLaunchArgument("direct_control_throttle_max", default_value=""),
         DeclareLaunchArgument("direct_control_steering_scale", default_value=""),
         DeclareLaunchArgument("direct_control_steering_limit_rad", default_value=""),
+        DeclareLaunchArgument("obstacle_latch_brake_enabled", default_value=""),
+        DeclareLaunchArgument("obstacle_latch_brake_s", default_value=""),
+        DeclareLaunchArgument("obstacle_latch_brake_recovery_s", default_value=""),
+        DeclareLaunchArgument("obstacle_latch_brake_stop_speed_mps", default_value=""),
+        DeclareLaunchArgument("obstacle_latch_brake_torque_nm", default_value=""),
+        DeclareLaunchArgument(
+            "obstacle_latch_brake_motor_rpm_release", default_value=""
+        ),
+        DeclareLaunchArgument(
+            "obstacle_latch_brake_motor_rpm_engage", default_value=""
+        ),
         DeclareLaunchArgument("maximum_state_age_s", default_value="0.10"),
         DeclareLaunchArgument("future_tolerance_s", default_value="0.02"),
         DeclareLaunchArgument("require_solution_validity", default_value=""),

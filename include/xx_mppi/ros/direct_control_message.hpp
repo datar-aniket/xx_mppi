@@ -40,6 +40,16 @@ struct DirectControlConfig {
   // running with steering calibration, which maps each axle from radians.
   bool four_wheel{false};
   std::string four_wheel_topic{"direct_control"};
+  // If every MPPI sample latches an obstacle in the configured near-term
+  // window, retain steering and command torque opposite measured motor rotation
+  // until vehicle speed reaches the release threshold.
+  bool obstacle_brake_enabled{false};
+  float obstacle_brake_activation_s{0.5F};
+  float obstacle_brake_recovery_s{0.5F};
+  float obstacle_brake_stop_speed_mps{0.05F};
+  float obstacle_brake_torque_nm{1.6F};
+  float obstacle_brake_motor_rpm_release{50.0F};
+  float obstacle_brake_motor_rpm_engage{80.0F};
 };
 
 void ValidateDirectControlConfig(const DirectControlConfig & config);
@@ -51,6 +61,13 @@ geometry_msgs::msg::Twist ToDirectControlMessage(
 // throttle as the Twist form, plus the rear steering angle Twist cannot express.
 xxcar_msgs::msg::DirectControl ToDirectControlMessage(
   const PlannedTrajectory & trajectory, const DirectControlConfig & config,
+  const rclcpp::Time & stamp);
+
+// Retain the selected MPPI steering and replace only wheel torque with the
+// selected safety torque. The message remains in torque mode.
+xxcar_msgs::msg::DirectControl ToSafetyTorqueMessage(
+  const PlannedTrajectory & trajectory, const DirectControlConfig & config,
+  float safety_torque_nm,
   const rclcpp::Time & stamp);
 
 }  // namespace xxcar::mppi

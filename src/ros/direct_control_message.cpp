@@ -51,6 +51,26 @@ void ValidateDirectControlConfig(const DirectControlConfig & config) {
       "control_mode torque requires direct_control_four_wheel: only the DirectControl "
       "transport marks the throttle as a wheel torque for ekf_mcu_driver to convert");
   }
+  if (config.obstacle_brake_enabled &&
+    (!config.enabled || !config.four_wheel || config.mode != DirectControlMode::kTorque ||
+    !std::isfinite(config.obstacle_brake_activation_s) ||
+    !(config.obstacle_brake_activation_s > 0.0F) ||
+    !std::isfinite(config.obstacle_brake_recovery_s) ||
+    !(config.obstacle_brake_recovery_s > 0.0F) ||
+    !std::isfinite(config.obstacle_brake_stop_speed_mps) ||
+    config.obstacle_brake_stop_speed_mps < 0.0F ||
+    !std::isfinite(config.obstacle_brake_torque_nm) ||
+    !(config.obstacle_brake_torque_nm > 0.0F) ||
+    !std::isfinite(config.obstacle_brake_motor_rpm_release) ||
+    config.obstacle_brake_motor_rpm_release < 0.0F ||
+    !std::isfinite(config.obstacle_brake_motor_rpm_engage) ||
+    !(config.obstacle_brake_motor_rpm_engage > config.obstacle_brake_motor_rpm_release)))
+  {
+    throw std::invalid_argument(
+      "obstacle latch braking requires enabled four-wheel DirectControl transport "
+      "in torque mode, with positive finite activation/recovery intervals and "
+      "brake magnitude, plus nonnegative finite speed/RPM thresholds");
+  }
   // One steering_scale is applied to both axles, but the servos differ in gain
   // and possibly sign. The four-wheel transport therefore carries plain radians
   // and leaves each axle's mapping to its own calibration in ekf_mcu_driver.
@@ -140,6 +160,25 @@ xxcar_msgs::msg::DirectControl ToDirectControlMessage(
     xxcar_msgs::msg::DirectControl::THROTTLE_DUTY_CYCLE :
     xxcar_msgs::msg::DirectControl::THROTTLE_TORQUE;
   return message;
+}
+
+xxcar_msgs::msg::DirectControl ToSafetyTorqueMessage(
+  const PlannedTrajectory & trajectory, const DirectControlConfig & config,
+  const float safety_torque_nm,
+  const rclcpp::Time & stamp)
+{
+  if (trajectory.controls.empty()) {
+    throw std::invalid_argument("cannot brake without an MPPI steering command");
+  }
+  if (config.mode != DirectControlMode::kTorque) {
+    throw std::invalid_argument("safety torque requires torque control mode");
+  }
+  if (!std::isfinite(safety_torque_nm)) {
+    throw std::invalid_argument("safety torque must be finite");
+  }
+  PlannedTrajectory brake_trajectory = trajectory;
+  brake_trajectory.controls.front()[kWheelTorque] = safety_torque_nm;
+  return ToDirectControlMessage(brake_trajectory, config, stamp);
 }
 
 }  // namespace xxcar::mppi

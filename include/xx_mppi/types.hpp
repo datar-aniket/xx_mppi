@@ -156,6 +156,10 @@ struct MppiConfig {
   std::array<float, kControlDim> control_max{0.5F, 5.0F, 0.0F};
   std::uint16_t noise_smoothing_window{5};
   std::uint16_t control_delay_steps{0};
+  // Number of predicted states after the current state that may trigger the
+  // all-sample obstacle brake. The obstacle cost itself remains latched over
+  // the complete horizon.
+  std::uint16_t obstacle_latch_brake_steps{5};
   float control_cost_gamma{0.8F};
   bool special_samples{true};
   bool use_reference_controls{true};
@@ -343,6 +347,13 @@ struct MppiDiagnostics {
   std::array<float, kControlDim> sigma_used{};
   float solve_time_ms{};
   std::uint32_t finite_rollouts{};
+  // Near-term obstacle latches used by the safety brake, not full-horizon cost
+  // latches. The window is configured by obstacle_latch_brake_steps.
+  std::uint32_t obstacle_latched_rollouts{};
+  std::uint32_t finite_unlatched_rollouts{};
+  bool all_rollouts_obstacle_latched{};
+  bool obstacle_field_active{};
+  bool obstacle_brake_active{};
   bool refinement_attempted{};
   bool refinement_accepted{};
   std::uint16_t refinement_iterations{};

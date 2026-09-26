@@ -61,6 +61,7 @@ TEST(EkfStateAdapter, ConvertsFramesTimestampAndPreservesPhysicalFeedbackUnits) 
   EXPECT_FLOAT_EQ(observation.measured_torque_nm, 2.0F);
   EXPECT_FLOAT_EQ(observation.measured_steering_rad, 0.4F);
   EXPECT_FLOAT_EQ(observation.driven_wheel_speed_mps, 5.5F);
+  EXPECT_FLOAT_EQ(observation.motor_speed_erpm, 2028.0F);
 }
 
 TEST(EkfStateAdapter, RejectsMissingPositionValidity) {

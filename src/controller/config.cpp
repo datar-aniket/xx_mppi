@@ -203,6 +203,8 @@ ControllerConfig LoadControllerConfig(
     mppi_yaml, "noise_smoothing_window", config.mppi.noise_smoothing_window);
   config.mppi.control_delay_steps = GetOr(
     mppi_yaml, "control_delay_steps", config.mppi.control_delay_steps);
+  config.mppi.obstacle_latch_brake_steps = GetOr(
+    mppi_yaml, "obstacle_latch_brake_steps", config.mppi.obstacle_latch_brake_steps);
   config.mppi.control_cost_gamma = GetOr(
     mppi_yaml, "control_cost_gamma", config.mppi.control_cost_gamma);
   config.mppi.special_samples = GetOr(
@@ -506,6 +508,12 @@ ControllerConfig LoadControllerConfig(
   }
   if (config.mppi.control_delay_steps >= config.mppi.horizon) {
     throw std::runtime_error("control_delay_steps must be less than horizon");
+  }
+  if (config.mppi.obstacle_latch_brake_steps == 0U ||
+    config.mppi.obstacle_latch_brake_steps > config.mppi.horizon)
+  {
+    throw std::runtime_error(
+            "obstacle_latch_brake_steps must be between 1 and horizon");
   }
   const auto & refinement_config = config.mppi.refinement;
   if (refinement_config.enabled &&

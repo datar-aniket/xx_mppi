@@ -99,6 +99,10 @@ int main(int argc, char ** argv) {
     if (const char * value = std::getenv("XX_MPPI_BENCH_SEED")) {
       config.seed = static_cast<std::uint64_t>(std::stoull(value));
     }
+    if (const char * value = std::getenv("XX_MPPI_BENCH_OBSTACLE_BRAKE_STEPS")) {
+      config.obstacle_latch_brake_steps =
+        static_cast<std::uint16_t>(std::stoul(value));
+    }
     std::uint32_t visualization_rollouts = 0U;
     if (const char * requested = std::getenv("XX_MPPI_BENCH_VISUALIZATION_ROLLOUTS")) {
       visualization_rollouts = static_cast<std::uint32_t>(std::stoul(requested));
@@ -111,6 +115,26 @@ int main(int argc, char ** argv) {
     }
     xxcar::mppi::CudaMppiController controller(
       config, costs, vehicle, obstacles, model_kind, raceline, integrator);
+    if (std::getenv("XX_MPPI_BENCH_BLOCKED_OBSTACLE") != nullptr) {
+      if (!obstacles.enabled) {
+        throw std::invalid_argument("blocked-obstacle benchmark requires obstacles.enabled");
+      }
+      const auto center = raceline.ToCartesian(raceline.s_min(), 0.0F);
+      xxcar::mppi::ObstacleField field;
+      field.generation = 1U;
+      field.resolution_m = obstacles.grid_resolution_m;
+      field.width = static_cast<std::uint32_t>(std::ceil(
+          obstacles.grid_width_m / obstacles.grid_resolution_m));
+      field.height = static_cast<std::uint32_t>(std::ceil(
+          obstacles.grid_height_m / obstacles.grid_resolution_m));
+      field.origin_east_m = center.first -
+        0.5F * static_cast<float>(field.width) * field.resolution_m;
+      field.origin_north_m = center.second -
+        0.5F * static_cast<float>(field.height) * field.resolution_m;
+      field.signed_distance_m.assign(
+        static_cast<std::size_t>(field.width) * field.height, -1.0F);
+      controller.UpdateObstacleField(field);
+    }
     auto reference = raceline.Sample(
       raceline.s_min(), config.horizon, config.dt_s);
     xxcar::mppi::State initial = reference.states.front();
@@ -137,6 +161,9 @@ int main(int argc, char ** argv) {
     float minimum_ess = static_cast<float>(config.num_samples);
     std::uint32_t minimum_finite = config.num_samples;
     std::size_t refinement_accepts = 0U;
+    std::size_t all_obstacle_latched_solves = 0U;
+    std::uint32_t maximum_obstacle_latched_rollouts = 0U;
+    std::uint32_t minimum_finite_unlatched_rollouts = config.num_samples;
     double refinement_cost_before_sum = 0.0;
     double refinement_cost_after_sum = 0.0;
     double refinement_merit_before_sum = 0.0;
@@ -183,6 +210,14 @@ int main(int argc, char ** argv) {
       minimum_ess = std::min(minimum_ess, solution.diagnostics.effective_sample_size);
       minimum_finite = std::min(minimum_finite, solution.diagnostics.finite_rollouts);
       refinement_accepts += solution.diagnostics.refinement_accepted ? 1U : 0U;
+      all_obstacle_latched_solves +=
+        solution.diagnostics.all_rollouts_obstacle_latched ? 1U : 0U;
+      maximum_obstacle_latched_rollouts = std::max(
+        maximum_obstacle_latched_rollouts,
+        solution.diagnostics.obstacle_latched_rollouts);
+      minimum_finite_unlatched_rollouts = std::min(
+        minimum_finite_unlatched_rollouts,
+        solution.diagnostics.finite_unlatched_rollouts);
       if (solution.diagnostics.refinement_accepted) {
         refinement_cost_before_sum += solution.diagnostics.refinement_cost_before;
         refinement_cost_after_sum += solution.diagnostics.refinement_cost_after;
@@ -272,6 +307,9 @@ int main(int argc, char ** argv) {
       << " final_lambda=" << final_lambda
       << " minimum_finite=" << minimum_finite
       << " refinement_accepts=" << refinement_accepts << '/' << iterations
+      << " all_obstacle_latched=" << all_obstacle_latched_solves << '/' << iterations
+      << " obstacle_latched_max=" << maximum_obstacle_latched_rollouts
+      << " finite_unlatched_min=" << minimum_finite_unlatched_rollouts
       << " SQP_actual_mean=" << static_cast<double>(refinement_sqp_iterations) /
         static_cast<double>(iterations)
       << " SQP_actual_max=" << maximum_refinement_sqp_iterations

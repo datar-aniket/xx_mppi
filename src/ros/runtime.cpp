@@ -25,6 +25,14 @@ MppiRosRuntime::MppiRosRuntime(
   controller_(MppiControllerBuilder::FromConfigDirectory(
       config_directory, vehicle_config_file)),
   direct_control_(std::move(direct_control)),
+  obstacle_brake_latch_(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(direct_control_.obstacle_brake_activation_s)),
+    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(direct_control_.obstacle_brake_recovery_s))),
+  motor_brake_hysteresis_(
+    direct_control_.obstacle_brake_torque_nm,
+    direct_control_.obstacle_brake_motor_rpm_release,
+    direct_control_.obstacle_brake_motor_rpm_engage),
   visualization_(std::move(visualization)),
   cost_terms_(std::move(cost_terms))
 {
@@ -48,6 +56,33 @@ MppiRosRuntime::MppiRosRuntime(
   }
   if (direct_control_.enabled) {
     ValidateDirectControlConfig(direct_control_);
+    if (direct_control_.obstacle_brake_enabled) {
+      if (!controller_->config().obstacles.enabled) {
+        throw std::invalid_argument(
+          "obstacle latch braking requires obstacle avoidance to be enabled");
+      }
+      if (controller_->config().mppi.control_min[kWheelTorque] >
+        -direct_control_.obstacle_brake_torque_nm ||
+        controller_->config().mppi.control_max[kWheelTorque] <
+        direct_control_.obstacle_brake_torque_nm)
+      {
+        throw std::invalid_argument(
+          "obstacle latch braking torque magnitude must fit both signed torque bounds");
+      }
+      RCLCPP_WARN(
+        node_.get_logger(),
+        "All-sample obstacle brake enabled: first %u predicted steps, %.3f s activation, "
+        "MPPI steering with %.3f Nm opposing motor rotation, RPM hysteresis "
+        "release<%.1f/engage>%.1f, stop release <= %.3f m/s, %.3f s healthy release; "
+        "mode=torque",
+        static_cast<unsigned>(controller_->config().mppi.obstacle_latch_brake_steps),
+        static_cast<double>(direct_control_.obstacle_brake_activation_s),
+        static_cast<double>(direct_control_.obstacle_brake_torque_nm),
+        static_cast<double>(direct_control_.obstacle_brake_motor_rpm_release),
+        static_cast<double>(direct_control_.obstacle_brake_motor_rpm_engage),
+        static_cast<double>(direct_control_.obstacle_brake_stop_speed_mps),
+        static_cast<double>(direct_control_.obstacle_brake_recovery_s));
+    }
     // Exactly one transport is ever created: a Twist, or the four-wheel
     // DirectControl message. Publishing both would give the driver two command
     // streams for the same actuator.
@@ -230,6 +265,7 @@ void MppiRosRuntime::PublishInfo(
     node_.get_logger(),
     "MPPI info: solve=%.3f ms lambda=%.6g sigma=[steer %.6g rad, torque %.6g Nm] "
     "command=[steer %.6g rad, torque %.6g Nm] cost=%.6g ESS=%.3f finite=%u "
+    "near_obstacle_latched=%u/%u obstacle_brake=%s "
     "publish_age=%.3f ms snapshot_age=%.3f ms",
     static_cast<double>(diagnostics.solve_time_ms),
     static_cast<double>(diagnostics.lambda_used),
@@ -239,7 +275,10 @@ void MppiRosRuntime::PublishInfo(
     static_cast<double>(command[kWheelTorque]),
     static_cast<double>(diagnostics.minimum_cost),
     static_cast<double>(diagnostics.effective_sample_size),
-    static_cast<unsigned>(diagnostics.finite_rollouts), publication_age_ms,
+    static_cast<unsigned>(diagnostics.finite_rollouts),
+    static_cast<unsigned>(diagnostics.obstacle_latched_rollouts),
+    static_cast<unsigned>(controller_->config().mppi.num_samples),
+    diagnostics.obstacle_brake_active ? "true" : "false", publication_age_ms,
     solution_age_ms);
   if (diagnostics.refinement_attempted) {
     RCLCPP_INFO(
@@ -399,7 +438,8 @@ void MppiRosRuntime::OnObservation(const VehicleObservation & observation) {
     !std::isfinite(observation.yaw_rate_radps) || !std::isfinite(sideslip) ||
     !std::isfinite(observation.measured_torque_nm) ||
     !std::isfinite(observation.measured_steering_rad) ||
-    !std::isfinite(observation.driven_wheel_speed_mps))
+    !std::isfinite(observation.driven_wheel_speed_mps) ||
+    !std::isfinite(observation.motor_speed_erpm))
   {
     throw std::invalid_argument("vehicle observation contains a non-finite value");
   }
@@ -668,9 +708,80 @@ void MppiRosRuntime::ControlPublicationCallback() {
   const auto publication_time = node_.get_clock()->now();
   const double solution_age_s = static_cast<double>(
     publication_time.nanoseconds() - solution->solution_pose_time_ns) * 1.0e-9;
-  if (controller_->config().maximum_solution_age_s > 0.0F &&
-    solution_age_s > static_cast<double>(controller_->config().maximum_solution_age_s))
+  const bool stale = controller_->config().maximum_solution_age_s > 0.0F &&
+    solution_age_s > static_cast<double>(controller_->config().maximum_solution_age_s);
+  std::optional<float> vehicle_speed_mps;
+  std::optional<float> motor_rpm;
   {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    if (latest_observation_) {
+      vehicle_speed_mps = latest_observation_->speed_mps;
+      motor_rpm = latest_observation_->motor_speed_erpm /
+        static_cast<float>(controller_->config().vehicle.motor_pole_pairs);
+    }
+  }
+  const bool release_for_velocity = vehicle_speed_mps &&
+    *vehicle_speed_mps <= direct_control_.obstacle_brake_stop_speed_mps;
+  float obstacle_brake_torque = 0.0F;
+  bool obstacle_brake = false;
+  bool entered_obstacle_brake = false;
+  bool released_obstacle_brake = false;
+  bool released_due_to_velocity = false;
+  if (direct_control_.obstacle_brake_enabled) {
+    const bool all_latched = solution->diagnostics.all_rollouts_obstacle_latched;
+    const bool healthy_population = solution->diagnostics.obstacle_field_active &&
+      solution->diagnostics.finite_unlatched_rollouts > 0U;
+    std::lock_guard<std::mutex> lock(obstacle_brake_mutex_);
+    const bool was_active = obstacle_brake_latch_.active();
+    const auto now = std::chrono::steady_clock::now();
+    // Reaching the vehicle-speed threshold releases and clears pending
+    // activation. Stale/invalid populations pause both debounce windows
+    // without releasing an active brake.
+    if (release_for_velocity) {
+      obstacle_brake = obstacle_brake_latch_.Update(all_latched, true, now);
+    } else if (!motor_rpm || stale || !solution->diagnostics.obstacle_field_active ||
+      (!all_latched && !healthy_population))
+    {
+      obstacle_brake = obstacle_brake_latch_.Pause();
+    } else {
+      obstacle_brake = obstacle_brake_latch_.Update(all_latched, false, now);
+    }
+    entered_obstacle_brake = !was_active && obstacle_brake;
+    released_obstacle_brake = was_active && !obstacle_brake;
+    released_due_to_velocity = released_obstacle_brake && release_for_velocity;
+    if (obstacle_brake && motor_rpm) {
+      obstacle_brake_torque = motor_brake_hysteresis_.Update(*motor_rpm);
+    } else {
+      motor_brake_hysteresis_.Reset();
+    }
+  }
+  if (entered_obstacle_brake) {
+    RCLCPP_ERROR(
+      node_.get_logger(),
+      "All %u MPPI samples latched an obstacle in the configured near-term window; "
+      "condition persisted %.3f s, motor=%.1f RPM, applying opposing torque %.3f Nm",
+      static_cast<unsigned>(solution->diagnostics.obstacle_latched_rollouts),
+      static_cast<double>(direct_control_.obstacle_brake_activation_s),
+      static_cast<double>(motor_rpm.value_or(0.0F)),
+      static_cast<double>(obstacle_brake_torque));
+  } else if (released_obstacle_brake) {
+    if (released_due_to_velocity) {
+      RCLCPP_WARN(
+        node_.get_logger(),
+        "Speed reached %.3f m/s; releasing motor-opposing obstacle brake and "
+        "returning control to MPPI %s mode",
+        static_cast<double>(vehicle_speed_mps.value_or(0.0F)),
+        DirectControlModeName(direct_control_.mode));
+    } else {
+      RCLCPP_WARN(
+        node_.get_logger(),
+        "Obstacle sample population remained healthy for %.3f s; returning control to "
+        "MPPI %s mode",
+        static_cast<double>(direct_control_.obstacle_brake_recovery_s),
+        DirectControlModeName(direct_control_.mode));
+    }
+  }
+  if (stale && !obstacle_brake) {
     RCLCPP_WARN_THROTTLE(
       node_.get_logger(), *node_.get_clock(), 1000,
       "Skipping stale MPPI solution (age %.3f s, limit %.3f s)", solution_age_s,
@@ -682,8 +793,22 @@ void MppiRosRuntime::ControlPublicationCallback() {
     return;
   }
 
+  std::shared_ptr<const PlannedTrajectory> published_solution = solution;
+  if (obstacle_brake) {
+    auto brake_snapshot = std::make_shared<PlannedTrajectory>(*solution);
+    for (auto & control : brake_snapshot->controls) {
+      control[kWheelTorque] = obstacle_brake_torque;
+    }
+    brake_snapshot->diagnostics.obstacle_brake_active = true;
+    published_solution = std::move(brake_snapshot);
+  }
+
   try {
-    if (direct_control_.four_wheel && direct_control_.enabled) {
+    if (obstacle_brake) {
+      four_wheel_control_publisher_->publish(
+        ToSafetyTorqueMessage(
+          *solution, direct_control_, obstacle_brake_torque, publication_time));
+    } else if (direct_control_.four_wheel && direct_control_.enabled) {
       four_wheel_control_publisher_->publish(
         ToDirectControlMessage(*solution, direct_control_, publication_time));
     } else if (direct_control_.enabled) {
@@ -697,7 +822,14 @@ void MppiRosRuntime::ControlPublicationCallback() {
       "MPPI control publication failed: %s", error.what());
     return;
   }
-  if (!solution->controls.empty()) {
+  if (obstacle_brake) {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    if (!solution->controls.empty()) {
+      Control brake_control = solution->controls.front();
+      brake_control[kWheelTorque] = obstacle_brake_torque;
+      pending_published_control_ = brake_control;
+    }
+  } else if (!solution->controls.empty()) {
     std::lock_guard<std::mutex> lock(worker_mutex_);
     pending_published_control_ = solution->controls.front();
   }
@@ -708,7 +840,7 @@ void MppiRosRuntime::ControlPublicationCallback() {
     published_solution_generation_ = std::max(
       published_solution_generation_, generation);
     published_solution_age_ms_ = solution_age_s * 1000.0;
-    published_solution_ = std::move(solution);
+    published_solution_ = std::move(published_solution);
   }
 }
 

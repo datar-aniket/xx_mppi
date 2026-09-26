@@ -25,6 +25,7 @@ struct VehicleObservation {
   float measured_torque_nm{};
   float measured_steering_rad{};
   float driven_wheel_speed_mps{};
+  float motor_speed_erpm{};
   std::uint32_t status{};
 };
 

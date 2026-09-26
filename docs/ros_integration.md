@@ -123,8 +123,36 @@ publish the first optimized MPPI control as `geometry_msgs/msg/Twist`:
   unchanged and without the duty-cycle clamp;
 - all other `Twist` fields are zero.
 
+### All-sample obstacle brake
+
+With `obstacle_latch_brake_enabled: true`, the CUDA rollout pass reports how
+many samples latch an obstacle within the first
+`obstacle_latch_brake_steps` predicted states. The obstacle cost still remains
+latched over the complete horizon, but a later predicted obstacle does not
+trigger the immediate brake. If the near-term count reaches `K`, the
+population must remain continuously all-latched for
+`obstacle_latch_brake_s` before the fallback engages. The publication worker
+then replaces the MPPI/SQP torque with `obstacle_latch_brake_torque_nm`, signed
+opposite the measured mechanical motor RPM. Electrical RPM from `EkfState` is
+divided by the configured motor pole-pair count first. Braking engages only
+above `obstacle_latch_brake_motor_rpm_engage` and releases to exactly zero
+torque below `obstacle_latch_brake_motor_rpm_release`. Between those thresholds
+it retains its previous state, preventing command chatter. The explicit
+`xxcar_msgs/DirectControl` command retains MPPI front/rear steering and
+`THROTTLE_TORQUE`, so normal and fallback commands use the same throttle type.
+Both signed torque bounds must accommodate the safety torque magnitude.
+
+The motor-opposing torque applies only while measured vehicle speed is above
+`obstacle_latch_brake_stop_speed_mps`. At or below that threshold the fallback
+releases to MPPI, even if near-term samples remain latched, and clears pending
+activation so it cannot oscillate while stationary. Otherwise it
+releases after at least one finite, obstacle-unlatched sample is available for
+`obstacle_latch_brake_recovery_s` continuously. The control mode never changes
+away from torque. Stale solutions and solves without an active obstacle field
+advance neither debounce interval.
+
 The checked-in YAML defaults are solution-validity checking enabled, direct
-output selected, topic `cmd_vel`, mode `duty_cycle`, and vehicle-specific
+output selected, topic `cmd_vel`, mode `torque`, and vehicle-specific
 mapping/limits. Duty-cycle mode matches `control_throttle_type:=0` in
 `ekf_mcu_driver`; calibrate its scale for the vehicle. Torque mode requires a
 consumer that interprets `linear.x` as Nm—it must not be connected to a driver

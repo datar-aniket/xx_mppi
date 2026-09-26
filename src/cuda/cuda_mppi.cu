@@ -118,6 +118,7 @@ struct DeviceMppi {
   std::uint16_t substeps;
   std::uint16_t smoothing_window;
   std::uint16_t delay_steps;
+  std::uint16_t obstacle_brake_steps;
   float dt;
   float lambda;
   float sigma[kControlDim];
@@ -667,6 +668,7 @@ __global__ void BuildCandidates(
 __global__ void RolloutAndCost(
   const State initial_state, const float initial_path_s, const Control previous_control,
   const Control * nominal, const Control * candidates, State * trajectories, float * costs,
+  std::uint8_t * obstacle_latches, std::uint8_t * obstacle_brake_latches,
   const DeviceTrack track, const DeviceReference reference,
   const DeviceObstacleField obstacle_field,
   const DeviceMppi config, const DeviceCosts weights,
@@ -686,6 +688,7 @@ __global__ void RolloutAndCost(
   bool crashed = false;
   bool excessive_sideslip = false;
   bool obstacle_latched = false;
+  bool obstacle_brake_latched = false;
   float discount = 1.0F;
   Control prior = previous_control;
   for (std::uint16_t t = 0; t < config.horizon; ++t) {
@@ -693,6 +696,9 @@ __global__ void RolloutAndCost(
       state, frenet, reference.states[t], track, reference, obstacle_field,
       config, weights, crashed, excessive_sideslip, obstacle_latched,
       discount, t != 0U);
+    if (t != 0U && t <= config.obstacle_brake_steps) {
+      obstacle_brake_latched = obstacle_brake_latched || obstacle_latched;
+    }
     discount *= weights.crash_discount;
     const Control control = candidates[control_base + t];
     for (std::size_t channel = 0; channel < kControlDim; ++channel) {
@@ -720,15 +726,21 @@ __global__ void RolloutAndCost(
     state, frenet, reference.states[config.horizon], track, reference,
     obstacle_field, config, weights, crashed, excessive_sideslip,
     obstacle_latched, discount, true);
+  if (config.horizon <= config.obstacle_brake_steps) {
+    obstacle_brake_latched = obstacle_brake_latched || obstacle_latched;
+  }
   cost -= weights.progress * (frenet.path_evolution - initial_path_s);
   costs[sample] = isfinite(cost) ? cost : CUDART_INF_F;
+  obstacle_latches[sample] = obstacle_latched ? 1U : 0U;
+  obstacle_brake_latches[sample] = obstacle_brake_latched ? 1U : 0U;
 }
 
 __global__ void InitializeNeuralRollouts(
   const State initial_state, const float initial_path_s, State * current_states,
   State * trajectories, float * costs, std::uint8_t * crashed,
   std::uint8_t * excessive_sideslip, std::uint8_t * obstacle_latched,
-  float * path_s_hint, const DeviceMppi config)
+  std::uint8_t * obstacle_brake_latched, float * path_s_hint,
+  const DeviceMppi config)
 {
   const std::uint32_t sample = blockIdx.x * blockDim.x + threadIdx.x;
   if (sample >= config.samples) {
@@ -741,6 +753,7 @@ __global__ void InitializeNeuralRollouts(
   crashed[sample] = 0U;
   excessive_sideslip[sample] = 0U;
   obstacle_latched[sample] = 0U;
+  obstacle_brake_latched[sample] = 0U;
 }
 
 __global__ void NeuralStageCostAndPack(
@@ -748,7 +761,7 @@ __global__ void NeuralStageCostAndPack(
   const State * current_states, const Control * nominal, const Control * candidates,
   float * model_input, float * costs, std::uint8_t * crashed,
   std::uint8_t * excessive_sideslip, std::uint8_t * obstacle_latched,
-  float * path_s_hint,
+  std::uint8_t * obstacle_brake_latched, float * path_s_hint,
   const std::uint16_t time_index, const DeviceTrack track,
   const DeviceReference reference, const DeviceObstacleField obstacle_field,
   const DeviceMppi config, const DeviceCosts weights)
@@ -768,6 +781,9 @@ __global__ void NeuralStageCostAndPack(
     state, frenet, reference.states[time_index], track, reference,
     obstacle_field, config, weights, crash_latch, sideslip_latch,
     obstacle_latch, discount, time_index != 0U);
+  if (time_index != 0U && time_index <= config.obstacle_brake_steps && obstacle_latch) {
+    obstacle_brake_latched[sample] = 1U;
+  }
   const std::size_t control_offset =
     static_cast<std::size_t>(sample) * config.horizon + time_index;
   const Control control = candidates[control_offset];
@@ -854,7 +870,8 @@ __global__ void NeuralIntegrateAndStore(
 __global__ void FinalizeNeuralCosts(
   const float initial_path_s, const State * current_states, float * costs,
   const std::uint8_t * crashed, const std::uint8_t * excessive_sideslip,
-  const std::uint8_t * obstacle_latched, const float * path_s_hint,
+  std::uint8_t * obstacle_latched, std::uint8_t * obstacle_brake_latched,
+  const float * path_s_hint,
   const DeviceTrack track, const DeviceReference reference,
   const DeviceObstacleField obstacle_field, const DeviceMppi config,
   const DeviceCosts weights)
@@ -875,11 +892,17 @@ __global__ void FinalizeNeuralCosts(
     obstacle_latch, discount, true);
   total -= weights.progress * (frenet.path_evolution - initial_path_s);
   costs[sample] = isfinite(total) ? total : CUDART_INF_F;
+  obstacle_latched[sample] = obstacle_latch ? 1U : 0U;
+  if (config.horizon <= config.obstacle_brake_steps && obstacle_latch) {
+    obstacle_brake_latched[sample] = 1U;
+  }
 }
 
 __global__ void PrepareReductionInputs(
   const float * costs, float * minimum_input, float * maximum_input,
-  std::uint32_t * finite_flags, const std::uint32_t count)
+  const std::uint8_t * obstacle_latches, std::uint32_t * finite_flags,
+  std::uint32_t * obstacle_latch_flags, std::uint32_t * finite_unlatched_flags,
+  const std::uint32_t count)
 {
   const std::uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < count) {
@@ -887,6 +910,9 @@ __global__ void PrepareReductionInputs(
     minimum_input[index] = finite ? costs[index] : CUDART_INF_F;
     maximum_input[index] = finite ? costs[index] : -CUDART_INF_F;
     finite_flags[index] = finite ? 1U : 0U;
+    const bool obstacle_latched = obstacle_latches[index] != 0U;
+    obstacle_latch_flags[index] = obstacle_latched ? 1U : 0U;
+    finite_unlatched_flags[index] = finite && !obstacle_latched ? 1U : 0U;
   }
 }
 
@@ -1720,6 +1746,17 @@ __device__ float RefinementAlpha(const std::size_t candidate) {
   return values[candidate];
 }
 
+__global__ void DisableRefinementWhenAllObstacleLatched(
+  const std::uint32_t * obstacle_latch_count, std::uint8_t * active,
+  const DeviceMppi config)
+{
+  if (blockIdx.x == 0U && threadIdx.x == 0U &&
+    *obstacle_latch_count == config.samples)
+  {
+    *active = 0U;
+  }
+}
+
 __global__ void EvaluateRefinementLineSearch(
   const State initial_state, const float initial_path_s,
   const Control previous_control, const State * states, const Control * controls,
@@ -1908,8 +1945,15 @@ __global__ void CommitRefinement(
   const State * refined_states, const Control * refined_controls,
   State * expected, Control * updated, const RefinementMetrics * initial_metrics,
   const RefinementMetrics * final_metrics, std::uint8_t * accepted,
+  const std::uint32_t * obstacle_latch_count,
   const DeviceMppi config, const DeviceRefinement refinement)
 {
+  if (*obstacle_latch_count == config.samples) {
+    if (blockIdx.x == 0U && threadIdx.x == 0U) {
+      *accepted = 0U;
+    }
+    return;
+  }
   const bool valid = final_metrics->safe != 0U &&
     isfinite(final_metrics->cost) && isfinite(final_metrics->merit) &&
     final_metrics->merit <= initial_metrics->merit &&
@@ -2080,10 +2124,13 @@ class CudaMppiController::Impl {
     }
     if (config_.num_samples <= 3U || config_.horizon == 0U ||
       config_.horizon == std::numeric_limits<std::uint16_t>::max() ||
+      config_.obstacle_latch_brake_steps == 0U ||
+      config_.obstacle_latch_brake_steps > config_.horizon ||
       !(config_.dt_s > 0.0F) || !(config_.lambda > 0.0F) ||
       raceline.points().size() < 2U)
     {
-      throw std::invalid_argument("invalid MPPI dimensions/timing or empty raceline");
+      throw std::invalid_argument(
+              "invalid MPPI dimensions/timing, obstacle brake window, or empty raceline");
     }
     if (model_kind == ModelKind::kTensorRtNeuralDerivative && neural_engine_path.empty()) {
       throw std::invalid_argument("neural dynamics requires a TensorRT engine path");
@@ -2119,6 +2166,7 @@ class CudaMppiController::Impl {
     device_config_.substeps = config_.integration_substeps;
     device_config_.smoothing_window = config_.noise_smoothing_window;
     device_config_.delay_steps = config_.control_delay_steps;
+    device_config_.obstacle_brake_steps = config_.obstacle_latch_brake_steps;
     device_config_.dt = config_.dt_s;
     device_config_.lambda = config_.lambda;
     device_config_.gamma = config_.control_cost_gamma;
@@ -2200,6 +2248,12 @@ class CudaMppiController::Impl {
     Allocate(sigma_partials_, kSigmaBlocks * kControlDim * 2U);
     Allocate(finite_flags_, samples);
     Allocate(finite_count_, 1U);
+    Allocate(obstacle_latches_, samples);
+    Allocate(obstacle_brake_latches_, samples);
+    Allocate(obstacle_latch_flags_, samples);
+    Allocate(obstacle_latch_count_, 1U);
+    Allocate(finite_unlatched_flags_, samples);
+    Allocate(finite_unlatched_count_, 1U);
     for (auto & slot : visualization_slots_) {
       Allocate(slot.weights, samples);
       Allocate(slot.trajectories, samples * (horizon + 1U));
@@ -2250,7 +2304,6 @@ class CudaMppiController::Impl {
       Allocate(neural_derivative_, samples * TensorRtDerivativeModel::kOutputWidth);
       Allocate(crash_latches_, samples);
       Allocate(sideslip_latches_, samples);
-      Allocate(obstacle_latches_, samples);
       Allocate(neural_s_hint_, samples);
     }
 
@@ -2375,6 +2428,12 @@ class CudaMppiController::Impl {
     Free(sigma_partials_);
     Free(finite_flags_);
     Free(finite_count_);
+    Free(obstacle_latches_);
+    Free(obstacle_brake_latches_);
+    Free(obstacle_latch_flags_);
+    Free(obstacle_latch_count_);
+    Free(finite_unlatched_flags_);
+    Free(finite_unlatched_count_);
     for (auto & slot : visualization_slots_) {
       Free(slot.weights);
       Free(slot.trajectories);
@@ -2417,7 +2476,6 @@ class CudaMppiController::Impl {
     Free(neural_derivative_);
     Free(crash_latches_);
     Free(sideslip_latches_);
-    Free(obstacle_latches_);
     Free(neural_s_hint_);
     if (reduction_temp_ != nullptr) {
       cudaFree(reduction_temp_);
@@ -2588,8 +2646,8 @@ class CudaMppiController::Impl {
     if (device_config_.model_kind == ModelKind::kTensorRtNeuralDerivative) {
       InitializeNeuralRollouts<<<sample_blocks, 256, 0, stream_>>>(
         initial_state, initial_path_s_m, neural_states_, trajectories_, costs_device_,
-        crash_latches_, sideslip_latches_, obstacle_latches_, neural_s_hint_,
-        device_config_);
+        crash_latches_, sideslip_latches_, obstacle_latches_, obstacle_brake_latches_,
+        neural_s_hint_, device_config_);
       const std::uint16_t substeps = device_config_.substeps == 0U ? 1U :
         device_config_.substeps;
       const float step_dt = device_config_.dt / static_cast<float>(substeps);
@@ -2597,7 +2655,8 @@ class CudaMppiController::Impl {
         NeuralStageCostAndPack<<<sample_blocks, 256, 0, stream_>>>(
           initial_state, previous_control, neural_states_, nominal_, candidates_,
           neural_input_, costs_device_, crash_latches_, sideslip_latches_,
-          obstacle_latches_, neural_s_hint_, t, track_, device_reference,
+          obstacle_latches_, obstacle_brake_latches_, neural_s_hint_, t,
+          track_, device_reference,
           obstacle_field_, device_config_, costs_);
         for (std::uint16_t substep = 0; substep < substeps; ++substep) {
           if (substep != 0U) {
@@ -2614,19 +2673,27 @@ class CudaMppiController::Impl {
       }
       FinalizeNeuralCosts<<<sample_blocks, 256, 0, stream_>>>(
         initial_path_s_m, neural_states_, costs_device_, crash_latches_,
-        sideslip_latches_, obstacle_latches_, neural_s_hint_, track_,
+        sideslip_latches_, obstacle_latches_, obstacle_brake_latches_,
+        neural_s_hint_, track_,
         device_reference, obstacle_field_, device_config_, costs_);
     } else {
       RolloutAndCost<<<sample_blocks, 256, 0, stream_>>>(
         initial_state, initial_path_s_m, previous_control, nominal_, candidates_,
-        trajectories_, costs_device_, track_, device_reference, obstacle_field_,
-        device_config_, costs_, vehicle_);
+        trajectories_, costs_device_, obstacle_latches_, obstacle_brake_latches_,
+        track_, device_reference, obstacle_field_, device_config_, costs_, vehicle_);
     }
     PrepareReductionInputs<<<sample_blocks, 256, 0, stream_>>>(
-      costs_device_, reduction_a_, reduction_b_, finite_flags_, config_.num_samples);
+      costs_device_, reduction_a_, reduction_b_, obstacle_brake_latches_, finite_flags_,
+      obstacle_latch_flags_, finite_unlatched_flags_, config_.num_samples);
     cub::DeviceReduce::Sum(
       reduction_temp_, reduction_temp_bytes_, finite_flags_, finite_count_,
       config_.num_samples, stream_);
+    cub::DeviceReduce::Sum(
+      reduction_temp_, reduction_temp_bytes_, obstacle_latch_flags_,
+      obstacle_latch_count_, config_.num_samples, stream_);
+    cub::DeviceReduce::Sum(
+      reduction_temp_, reduction_temp_bytes_, finite_unlatched_flags_,
+      finite_unlatched_count_, config_.num_samples, stream_);
     cub::DeviceReduce::Min(
       reduction_temp_, reduction_temp_bytes_, reduction_a_, minimum_,
       config_.num_samples, stream_);
@@ -2696,6 +2763,27 @@ class CudaMppiController::Impl {
       CheckCuda(cudaMemsetAsync(
         refinement_sqp_iterations_, 0, sizeof(std::uint16_t), stream_),
         "reset MPC SQP iteration count");
+      CheckCuda(cudaMemsetAsync(
+        refinement_pcg_iterations_, 0, sizeof(std::uint16_t), stream_),
+        "reset MPC PCG iteration count");
+      CheckCuda(cudaMemsetAsync(
+        refinement_accepted_, 0, sizeof(std::uint8_t), stream_),
+        "reset MPC acceptance");
+      CheckCuda(cudaMemsetAsync(
+        refinement_metrics_, 0,
+        kLineSearchCandidates * sizeof(RefinementMetrics), stream_),
+        "reset MPC trial metrics");
+      CheckCuda(cudaMemsetAsync(
+        refinement_original_metrics_, 0, sizeof(RefinementMetrics), stream_),
+        "reset initial MPC metrics");
+      CheckCuda(cudaMemsetAsync(
+        refinement_initial_metrics_, 0, sizeof(RefinementMetrics), stream_),
+        "reset current MPC metrics");
+      CheckCuda(cudaMemsetAsync(
+        refinement_final_metrics_, 0, sizeof(RefinementMetrics), stream_),
+        "reset final MPC metrics");
+      DisableRefinementWhenAllObstacleLatched<<<1, 1, 0, stream_>>>(
+        obstacle_latch_count_, refinement_active_, device_config_);
       const std::size_t derivative_values = std::max(
         (horizon + 1U) * kStateDim, horizon * kControlDim);
       const int derivative_blocks = static_cast<int>((derivative_values + 255U) / 256U);
@@ -2759,7 +2847,7 @@ class CudaMppiController::Impl {
       CommitRefinement<<<trajectory_blocks, 256, 0, stream_>>>(
         refinement_states_, refinement_controls_, expected_, updated_,
         refinement_original_metrics_, refinement_final_metrics_,
-        refinement_accepted_, device_config_, device_refinement_);
+        refinement_accepted_, obstacle_latch_count_, device_config_, device_refinement_);
       MeasureRefinementDelta<<<1, 1, 0, stream_>>>(
         refinement_anchor_states_, refinement_anchor_controls_, expected_, updated_,
         refinement_accepted_, refinement_delta_, device_config_);
@@ -2785,6 +2873,8 @@ class CudaMppiController::Impl {
     float minimum = 0.0F;
     float ess = 0.0F;
     std::uint32_t finite_count = 0U;
+    std::uint32_t obstacle_latch_count = 0U;
+    std::uint32_t finite_unlatched_count = 0U;
     std::uint8_t refinement_accepted = 0U;
     std::uint16_t refinement_sqp_iterations = 0U;
     std::uint16_t refinement_pcg_iterations = 0U;
@@ -2811,6 +2901,12 @@ class CudaMppiController::Impl {
     CheckCuda(cudaMemcpyAsync(
       &finite_count, finite_count_, sizeof(std::uint32_t),
       cudaMemcpyDeviceToHost, stream_), "copy finite rollout count");
+    CheckCuda(cudaMemcpyAsync(
+      &obstacle_latch_count, obstacle_latch_count_, sizeof(std::uint32_t),
+      cudaMemcpyDeviceToHost, stream_), "copy obstacle-latched rollout count");
+    CheckCuda(cudaMemcpyAsync(
+      &finite_unlatched_count, finite_unlatched_count_, sizeof(std::uint32_t),
+      cudaMemcpyDeviceToHost, stream_), "copy finite unlatched rollout count");
     if (config_.refinement.enabled) {
       CheckCuda(cudaMemcpyAsync(
         &refinement_accepted, refinement_accepted_, sizeof(std::uint8_t),
@@ -2876,6 +2972,12 @@ class CudaMppiController::Impl {
     solution.diagnostics.sigma_used = config_.sigma;
     solution.diagnostics.solve_time_ms = elapsed_ms;
     solution.diagnostics.finite_rollouts = finite_count;
+    solution.diagnostics.obstacle_latched_rollouts = obstacle_latch_count;
+    solution.diagnostics.finite_unlatched_rollouts = finite_unlatched_count;
+    solution.diagnostics.all_rollouts_obstacle_latched =
+      obstacle_latch_count == config_.num_samples;
+    solution.diagnostics.obstacle_field_active =
+      obstacle_config_.enabled && obstacle_field_.valid;
     solution.diagnostics.refinement_attempted = config_.refinement.enabled;
     solution.diagnostics.refinement_accepted = refinement_accepted != 0U;
     solution.diagnostics.refinement_iterations = refinement_sqp_iterations;
@@ -3072,6 +3174,10 @@ class CudaMppiController::Impl {
   float * sigma_partials_{nullptr};
   std::uint32_t * finite_flags_{nullptr};
   std::uint32_t * finite_count_{nullptr};
+  std::uint32_t * obstacle_latch_flags_{nullptr};
+  std::uint32_t * obstacle_latch_count_{nullptr};
+  std::uint32_t * finite_unlatched_flags_{nullptr};
+  std::uint32_t * finite_unlatched_count_{nullptr};
   std::array<VisualizationSlot, kVisualizationSlotCount> visualization_slots_{};
   std::mutex visualization_mutex_;
   std::uint64_t next_visualization_snapshot_id_{1U};
@@ -3111,6 +3217,7 @@ class CudaMppiController::Impl {
   std::uint8_t * crash_latches_{nullptr};
   std::uint8_t * sideslip_latches_{nullptr};
   std::uint8_t * obstacle_latches_{nullptr};
+  std::uint8_t * obstacle_brake_latches_{nullptr};
   float * neural_s_hint_{nullptr};
   std::unique_ptr<TensorRtDerivativeModel> neural_model_;
   void * reduction_temp_{nullptr};

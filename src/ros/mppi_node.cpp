@@ -65,6 +65,29 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
     "direct_control_four_wheel", yaml_defaults.direct_control.four_wheel);
   direct_control.four_wheel_topic = declare_parameter<std::string>(
     "direct_control_four_wheel_topic", yaml_defaults.direct_control.four_wheel_topic);
+  direct_control.obstacle_brake_enabled = declare_parameter<bool>(
+    "obstacle_latch_brake_enabled", yaml_defaults.direct_control.obstacle_brake_enabled);
+  direct_control.obstacle_brake_activation_s = static_cast<float>(declare_parameter<double>(
+      "obstacle_latch_brake_s",
+      static_cast<double>(yaml_defaults.direct_control.obstacle_brake_activation_s)));
+  direct_control.obstacle_brake_recovery_s = static_cast<float>(declare_parameter<double>(
+      "obstacle_latch_brake_recovery_s",
+      static_cast<double>(yaml_defaults.direct_control.obstacle_brake_recovery_s)));
+  direct_control.obstacle_brake_stop_speed_mps = static_cast<float>(
+    declare_parameter<double>(
+      "obstacle_latch_brake_stop_speed_mps",
+      static_cast<double>(yaml_defaults.direct_control.obstacle_brake_stop_speed_mps)));
+  direct_control.obstacle_brake_torque_nm = static_cast<float>(declare_parameter<double>(
+      "obstacle_latch_brake_torque_nm",
+      static_cast<double>(yaml_defaults.direct_control.obstacle_brake_torque_nm)));
+  direct_control.obstacle_brake_motor_rpm_release = static_cast<float>(
+    declare_parameter<double>(
+      "obstacle_latch_brake_motor_rpm_release",
+      static_cast<double>(yaml_defaults.direct_control.obstacle_brake_motor_rpm_release)));
+  direct_control.obstacle_brake_motor_rpm_engage = static_cast<float>(
+    declare_parameter<double>(
+      "obstacle_latch_brake_motor_rpm_engage",
+      static_cast<double>(yaml_defaults.direct_control.obstacle_brake_motor_rpm_engage)));
   maximum_state_age_s_ = declare_parameter<double>("maximum_state_age_s", 0.10);
   future_tolerance_s_ = declare_parameter<double>("future_tolerance_s", 0.02);
   adapter_config_.require_solution_validity = declare_parameter<bool>(

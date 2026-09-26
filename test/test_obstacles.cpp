@@ -1,14 +1,68 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <chrono>
 
 #include "xx_mppi/obstacles/pose_history.hpp"
 #include "xx_mppi/obstacles/laser_deskew.hpp"
 #include "xx_mppi/obstacles/signed_distance_field.hpp"
 #include "xx_mppi/obstacles/temporal_obstacle_filter.hpp"
+#include "xx_mppi/safety/obstacle_brake_latch.hpp"
+#include "xx_mppi/safety/motor_brake_hysteresis.hpp"
 
 namespace xxcar::mppi {
 namespace {
+
+TEST(ObstacleBrakeLatch, RequiresContinuousHazardAndHealthyRecoveryWindows) {
+  using namespace std::chrono_literals;
+  ObstacleBrakeLatch latch(500ms, 500ms);
+  const auto start = std::chrono::steady_clock::time_point{};
+
+  EXPECT_FALSE(latch.Update(true, false, start));
+  EXPECT_FALSE(latch.Update(true, false, start + 499ms));
+  EXPECT_TRUE(latch.Update(true, false, start + 500ms));
+  EXPECT_TRUE(latch.Update(false, false, start + 600ms));
+  EXPECT_TRUE(latch.Update(false, false, start + 1099ms));
+  EXPECT_FALSE(latch.Update(false, false, start + 1100ms));
+
+  // One healthy population resets a pending activation debounce.
+  EXPECT_FALSE(latch.Update(true, false, start + 1200ms));
+  EXPECT_FALSE(latch.Update(false, false, start + 1600ms));
+  EXPECT_FALSE(latch.Update(true, false, start + 1700ms));
+  EXPECT_FALSE(latch.Update(true, false, start + 2199ms));
+  EXPECT_TRUE(latch.Update(true, false, start + 2200ms));
+}
+
+TEST(ObstacleBrakeLatch, StopReleasesAndSuppressesReengagement) {
+  using namespace std::chrono_literals;
+  ObstacleBrakeLatch latch(500ms, 500ms);
+  const auto start = std::chrono::steady_clock::time_point{};
+
+  EXPECT_FALSE(latch.Update(true, false, start));
+  EXPECT_TRUE(latch.Update(true, false, start + 500ms));
+  EXPECT_FALSE(latch.Update(true, true, start + 600ms));
+  EXPECT_FALSE(latch.Update(true, true, start + 2s));
+
+  // Moving again starts a fresh debounce; stopped time cannot accumulate.
+  EXPECT_FALSE(latch.Update(true, false, start + 2100ms));
+  EXPECT_FALSE(latch.Update(true, false, start + 2599ms));
+  EXPECT_TRUE(latch.Update(true, false, start + 2600ms));
+  EXPECT_TRUE(latch.Pause());
+}
+
+TEST(MotorBrakeHysteresis, UsesSeparateEngageAndReleaseRpmThresholds) {
+  MotorBrakeHysteresis brake(1.6F, 50.0F, 80.0F);
+
+  EXPECT_FLOAT_EQ(brake.Update(80.0F), 0.0F);
+  EXPECT_FLOAT_EQ(brake.Update(80.01F), -1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(60.0F), -1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(50.0F), -1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(49.99F), 0.0F);
+  EXPECT_FLOAT_EQ(brake.Update(70.0F), 0.0F);
+  EXPECT_FLOAT_EQ(brake.Update(-81.0F), 1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(-60.0F), 1.6F);
+  EXPECT_FLOAT_EQ(brake.Update(-49.0F), 0.0F);
+}
 
 TEST(PoseHistory, InterpolatesYawAcrossWrapAndPosition) {
   PoseHistory history(0.1F, 0.02F);

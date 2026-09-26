@@ -59,7 +59,8 @@ Projection MppiController::UpdateObservation(const VehicleObservation & observat
     !std::isfinite(observation.yaw_rate_radps) || !std::isfinite(sideslip) ||
     !std::isfinite(observation.measured_torque_nm) ||
     !std::isfinite(observation.measured_steering_rad) ||
-    !std::isfinite(observation.driven_wheel_speed_mps))
+    !std::isfinite(observation.driven_wheel_speed_mps) ||
+    !std::isfinite(observation.motor_speed_erpm))
   {
     throw std::invalid_argument("vehicle observation contains a non-finite value");
   }

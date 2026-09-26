@@ -113,6 +113,7 @@ VehicleObservation ToVehicleObservation(
     message.wheel_torque_nm, "measured wheel torque");
   observation.measured_steering_rad = FiniteFloat(message.steering_angle, "steering angle");
   observation.driven_wheel_speed_mps = FiniteFloat(message.wheel_speed_mps, "wheel speed");
+  observation.motor_speed_erpm = FiniteFloat(message.motor_speed_erpm, "motor ERPM");
   observation.status = static_cast<std::uint32_t>(message.solution_status) |
     (static_cast<std::uint32_t>(message.source_valid) << 8U);
   return observation;
