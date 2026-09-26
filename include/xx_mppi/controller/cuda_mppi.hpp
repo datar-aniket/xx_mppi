@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "xx_mppi/costs/cost_evaluator.hpp"
@@ -31,15 +32,21 @@ class CudaMppiController {
   // initial_path_s_m is the loop-continuous arc length of the initial state. In
   // the Frenet frame it equals initial_state[kPathEvolution]; in the Cartesian
   // frame it seeds the on-device reprojection so s stays continuous.
-  // capture_cost_terms decomposes the published trajectory's cost into its
-  // individual terms and returns it in the diagnostics. It runs outside the
-  // measured solve, so callers should still request it well below the solve
-  // rate rather than on every cycle.
+  // num_visualization_rollouts and capture_cost_terms stage a capture of the
+  // highest-weight rollouts and of the per-term decomposition of the returned
+  // trajectory's cost. Staging only enqueues GPU work behind the solve on a
+  // second stream; Solve never waits for it. Only one capture is outstanding at
+  // a time: while one is uncollected, further requests are ignored and the
+  // solution's capture_id stays zero.
   [[nodiscard]] MppiSolution Solve(
     const State & initial_state, const ReferenceHorizon & reference,
     const Control & previous_control, float initial_path_s_m, float shift_fraction,
     bool reset, std::uint32_t num_visualization_rollouts = 0U,
     bool capture_cost_terms = false);
+  // Blocks until the outstanding capture is complete, returns it and frees the
+  // slot for the next one. Safe to call from a thread other than the one
+  // calling Solve. Returns nullopt when no capture is outstanding.
+  [[nodiscard]] std::optional<MppiCapture> CollectCapture();
   void UpdateObstacleField(const ObstacleField & field);
   void ClearObstacleField();
 

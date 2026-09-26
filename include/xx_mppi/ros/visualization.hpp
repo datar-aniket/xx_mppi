@@ -13,7 +13,10 @@
 namespace xxcar::mppi {
 
 struct VisualizationConfig {
-  bool enabled{false};
+  bool enabled{false};  // expected path, rollouts, raceline and track boundaries
+  // The obstacle costmap is switched separately: at the shipped 1 cm grid it
+  // is ~1 MB per message and can saturate a WiFi link on its own.
+  bool obstacle_costmap_enabled{false};
   std::string frame_id{"map"};
   std::string planned_path_topic{"xx_mppi/expected_path"};
   std::string marker_topic{"xx_mppi/rollouts"};

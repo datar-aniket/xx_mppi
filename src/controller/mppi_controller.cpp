@@ -145,7 +145,7 @@ PlannedTrajectory MppiController::PlanLatest(
     const auto point = StateToEnu(raceline_, solution.states[i], config_.mppi.frame);
     result.states.push_back(CartesianTrajectoryState{point.first, point.second});
   }
-  result.sampled_rollouts = std::move(solution.sampled_rollouts);
+  result.capture_id = solution.capture_id;
 
   previous_pose_time_ns_ = observation.pose_time_ns;
   reset_next_ = false;

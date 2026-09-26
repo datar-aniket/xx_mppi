@@ -39,11 +39,14 @@ struct PlannedTrajectory {
   float dt_s{};
   std::vector<CartesianTrajectoryState> states;  // T, terminal x[T] omitted
   std::vector<Control> controls;                 // T
-  std::vector<WeightedRollout> sampled_rollouts;  // optional, highest weight first
+  // Empty from PlanLatest; filled from CollectCapture off the solver thread.
+  std::vector<WeightedRollout> sampled_rollouts;  // highest weight first
   MppiDiagnostics diagnostics{};
   Projection projection{};
   // Frame the rollout states in sampled_rollouts are expressed in.
   FrameKind frame{FrameKind::kFrenet};
+  // Nonzero when PlanLatest staged the requested capture (see CollectCapture).
+  std::uint64_t capture_id{};
 };
 
 // The sideslip both the Frenet projection and the body model use.
@@ -75,9 +78,11 @@ class MppiController {
   // Call for every incoming state message, even if optimization is throttled
   // to solve_rate_hz. This keeps the loop-continuous s hint current.
   [[nodiscard]] Projection UpdateObservation(const VehicleObservation & observation);
-  // capture_cost_terms fills diagnostics.cost_terms with the per-term
-  // decomposition of the returned trajectory's cost. Request it well below the
-  // solve rate; it is debug output, not part of the control path.
+  // num_visualization_rollouts and capture_cost_terms stage a capture of the
+  // highest-weight rollouts and of the per-term decomposition of the returned
+  // trajectory's cost. Planning never waits for it: a nonzero capture_id on the
+  // result means it was staged, and CollectCapture returns it. Request it well
+  // below the solve rate; it is debug output, not part of the control path.
   [[nodiscard]] PlannedTrajectory PlanLatest(
     std::uint32_t num_visualization_rollouts = 0U, bool capture_cost_terms = false);
   [[nodiscard]] PlannedTrajectory Plan(
@@ -87,6 +92,12 @@ class MppiController {
   // the fallback feedback aligned with what left the controller, not merely
   // with the newest (possibly downsampled) solve.
   void RecordPublishedControl(const Control & control) noexcept;
+  // Blocks until the outstanding capture is ready and frees the slot for the
+  // next one. Call it from a thread other than the planning thread, once per
+  // nonzero capture_id, or no further captures are staged.
+  [[nodiscard]] std::optional<MppiCapture> CollectCapture() {
+    return optimizer_.CollectCapture();
+  }
   void UpdateObstacleField(const ObstacleField & field);
   void ClearObstacleField();
   void Reset() noexcept;

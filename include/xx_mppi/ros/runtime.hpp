@@ -52,11 +52,18 @@ class MppiRosRuntime {
     const PlannedTrajectory & trajectory, const rclcpp::Time & publication_time);
   void PublishObstacleVisualization(
     const ObstacleField & field, const rclcpp::Time & publication_time);
-  void PublishInfo(const PlannedTrajectory & trajectory, double publication_age_ms);
+  void PublishInfo(
+    const PlannedTrajectory & trajectory, double publication_age_ms,
+    const std::optional<CostTerms> & cost_terms);
   void PublishCostTerms(const PlannedTrajectory & trajectory);
-  void QueueVisualization(
-    std::shared_ptr<const PlannedTrajectory> trajectory,
-    const rclcpp::Time & publication_time);
+  struct CaptureWork {
+    std::shared_ptr<const PlannedTrajectory> trajectory;
+    rclcpp::Time publication_time;
+    std::uint64_t reset_epoch{};
+    bool visualization{false};  // publish the planned path and rollouts
+  };
+  void QueueCapture(CaptureWork work);
+  void PublishCapture(const CaptureWork & work);
   void VisualizationWorker();
   void SolverWorker();
   void ControlWorker();
@@ -111,6 +118,8 @@ class MppiRosRuntime {
   std::uint64_t latest_solution_generation_{};
   std::uint64_t published_solution_generation_{};
   double published_solution_age_ms_{};
+  // Newest collected cost decomposition, for the terminal summary.
+  std::optional<CostTerms> latest_cost_terms_;
   std::chrono::nanoseconds visualization_period_{};
   std::chrono::steady_clock::time_point next_visualization_time_{};
   std::chrono::steady_clock::time_point next_costmap_time_{};
@@ -118,14 +127,13 @@ class MppiRosRuntime {
   std::chrono::steady_clock::time_point next_cost_terms_time_{};
   std::mutex visualization_mutex_;
   std::condition_variable visualization_cv_;
-  std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>>
-  pending_visualization_;
+  // A solve that staged a capture of rollouts and/or cost terms. The solver only
+  // enqueues that GPU work; the visualization worker waits for it, publishes it
+  // and frees the controller's single capture slot. Every staged capture must
+  // reach the worker, or the slot is never freed and captures stop.
+  std::optional<CaptureWork> pending_capture_;
   std::optional<std::pair<std::shared_ptr<const ObstacleField>, rclcpp::Time>>
   pending_obstacle_visualization_;
-  // Cost term debug rides the visualization worker rather than a thread of its
-  // own: it is gated to its own rate in SolveOnce and only needs to stay off
-  // the solver and control threads.
-  std::shared_ptr<const PlannedTrajectory> pending_cost_terms_;
   bool stop_visualization_{false};
   std::thread solver_thread_;
   std::thread control_thread_;

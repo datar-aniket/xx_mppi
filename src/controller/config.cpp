@@ -501,7 +501,9 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
     throw std::runtime_error("model.yaml must define raceline_path");
   }
 
-  if (config.model_kind == ModelKind::kDynamicBicycleFiala) {
+  if (config.model_kind == ModelKind::kDynamicBicycleFiala ||
+    config.model_kind == ModelKind::kDynamicBicycleFiala4ws)
+  {
     // The analytic Fiala driven-wheel state is the stiffest mode: the tire
     // force reacts to slip almost instantly, so its explicit integration step
     // is constrained by -r^2 C / I. This bound does not describe a learned

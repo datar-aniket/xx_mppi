@@ -40,9 +40,13 @@ track-boundary paths. A dedicated latest-only worker builds and publishes the
 visualization after a solve. Enable it with `publish_visualization:=true`; set
 `visualization_rate_hz` and `num_rollouts` in `config/mppi.yaml`. All ROS topics
 use best-effort reliability; RViz displays must also select Best Effort.
-When obstacles are enabled, the same background worker publishes the normalized
-SDF obstacle cost as `nav_msgs/OccupancyGrid` on `xx_mppi/obstacle_costmap` at
-the configured visualization rate (20 Hz by default). Terminal info logging is
+The normalized SDF obstacle cost is switched separately with
+`publish_obstacle_costmap:=true` (off by default, and independent of
+`publish_visualization`). When obstacles are enabled, the same background worker
+then publishes it as `nav_msgs/OccupancyGrid` on `xx_mppi/obstacle_costmap` at
+the configured visualization rate. At a 1 cm grid each message is ~1 MB; over
+WiFi at 10 Hz it saturates the node's DDS socket and stalls `direct_control`,
+so keep it off while driving. Terminal info logging is
 also queued to this worker so ROS logging and visualization never execute in the
 solver callback.
 

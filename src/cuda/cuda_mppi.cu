@@ -6,12 +6,13 @@
 #include <math_constants.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -1114,6 +1115,74 @@ __global__ void EvaluateCostBreakdown(
   *out = terms;
 }
 
+// Copies the count highest-weight rollouts, heaviest first with ties broken
+// toward the lower sample index, into a compact buffer so visualization never
+// reads the full K x (T + 1) trajectory set back to the host. One block runs
+// count argmax rounds; each round takes the heaviest sample strictly after the
+// previous pick in that order, so no selected set has to be kept.
+constexpr std::uint32_t kSelectThreads = 256U;
+
+__device__ __forceinline__ bool RanksBefore(
+  const float lhs_weight, const std::uint32_t lhs_index,
+  const float rhs_weight, const std::uint32_t rhs_index)
+{
+  return lhs_weight > rhs_weight || (lhs_weight == rhs_weight && lhs_index < rhs_index);
+}
+
+__global__ void SelectHeaviestRollouts(
+  const float * weights, const State * trajectories, const std::uint32_t num_samples,
+  const std::uint32_t count, const std::uint32_t steps, std::uint32_t * selected,
+  float * selected_weights, State * selected_states)
+{
+  __shared__ float block_weight[kSelectThreads];
+  __shared__ std::uint32_t block_index[kSelectThreads];
+  const std::uint32_t thread = threadIdx.x;
+  float previous_weight = CUDART_INF_F;
+  std::uint32_t previous_index = 0U;
+  for (std::uint32_t rank = 0; rank < count; ++rank) {
+    float best_weight = -CUDART_INF_F;
+    std::uint32_t best_index = num_samples;
+    for (std::uint32_t sample = thread; sample < num_samples; sample += blockDim.x) {
+      float weight = weights[sample];
+      if (!(weight >= 0.0F)) {
+        weight = -1.0F;  // NaN or negative sorts last but stays selectable.
+      }
+      if (RanksBefore(previous_weight, previous_index, weight, sample) &&
+        RanksBefore(weight, sample, best_weight, best_index))
+      {
+        best_weight = weight;
+        best_index = sample;
+      }
+    }
+    block_weight[thread] = best_weight;
+    block_index[thread] = best_index;
+    __syncthreads();
+    for (std::uint32_t stride = blockDim.x / 2U; stride > 0U; stride /= 2U) {
+      if (thread < stride &&
+        RanksBefore(
+          block_weight[thread + stride], block_index[thread + stride],
+          block_weight[thread], block_index[thread]))
+      {
+        block_weight[thread] = block_weight[thread + stride];
+        block_index[thread] = block_index[thread + stride];
+      }
+      __syncthreads();
+    }
+    previous_weight = block_weight[0];
+    previous_index = block_index[0];
+    if (thread == 0U) {
+      selected[rank] = previous_index;
+      selected_weights[rank] = weights[previous_index];
+    }
+    __syncthreads();
+  }
+  for (std::uint32_t i = thread; i < count * steps; i += blockDim.x) {
+    const std::uint32_t rank = i / steps;
+    const std::uint32_t step = i - rank * steps;
+    selected_states[i] = trajectories[static_cast<std::size_t>(selected[rank]) * steps + step];
+  }
+}
+
 // Adaptive-sigma statistics. Both accumulators are flat sums over every
 // (sample, step) pair,
 //   weighted[c]   = (1 / T)     * sum_{k,t} w_k * p[k][t][c]^2
@@ -1337,6 +1406,19 @@ class CudaMppiController::Impl {
     CheckCuda(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "cudaStreamCreate");
     CheckCuda(cudaEventCreate(&start_event_), "cudaEventCreate start");
     CheckCuda(cudaEventCreate(&stop_event_), "cudaEventCreate stop");
+    // Capture work runs on its own stream so it overlaps the next solve rather
+    // than queueing ahead of it. The collector sleeps on capture_event_ instead
+    // of spinning a CPU core.
+    CheckCuda(
+      cudaStreamCreateWithFlags(&capture_stream_, cudaStreamNonBlocking),
+      "cudaStreamCreate capture");
+    CheckCuda(
+      cudaEventCreateWithFlags(&snapshot_event_, cudaEventDisableTiming),
+      "cudaEventCreate snapshot");
+    CheckCuda(
+      cudaEventCreateWithFlags(
+        &capture_event_, cudaEventDisableTiming | cudaEventBlockingSync),
+      "cudaEventCreate capture");
     const std::size_t samples = config_.num_samples;
     const std::size_t horizon = config_.horizon;
     Allocate(random_states_, samples);
@@ -1352,6 +1434,17 @@ class CudaMppiController::Impl {
     Allocate(nominal_snapshot_, horizon);
     Allocate(updated_, horizon);
     Allocate(cost_terms_, 1U);
+    Allocate(capture_expected_, horizon + 1U);
+    Allocate(capture_updated_, horizon);
+    Allocate(capture_reference_states_, horizon + 1U);
+    Allocate(capture_reference_controls_, horizon);
+    Allocate(capture_reference_s_, horizon + 1U);
+    Allocate(capture_reference_speed_, horizon + 1U);
+    Allocate(capture_reference_e_min_, horizon + 1U);
+    Allocate(capture_reference_e_max_, horizon + 1U);
+    CheckCuda(cudaMallocHost(
+        reinterpret_cast<void **>(&host_cost_terms_), sizeof(CostTerms)),
+      "allocate pinned cost terms");
     Allocate(expected_, horizon + 1U);
     Allocate(reference_states_, horizon + 1U);
     Allocate(reference_controls_, horizon);
@@ -1461,6 +1554,25 @@ class CudaMppiController::Impl {
   }
 
   ~Impl() {
+    // A capture may still be in flight on either stream when the node exits.
+    if (stream_ != nullptr) {
+      cudaStreamSynchronize(stream_);
+    }
+    if (capture_stream_ != nullptr) {
+      cudaStreamSynchronize(capture_stream_);
+    }
+    FreeCaptureRollouts();
+    Free(capture_expected_);
+    Free(capture_updated_);
+    Free(capture_reference_states_);
+    Free(capture_reference_controls_);
+    Free(capture_reference_s_);
+    Free(capture_reference_speed_);
+    Free(capture_reference_e_min_);
+    Free(capture_reference_e_max_);
+    if (host_cost_terms_ != nullptr) {
+      cudaFreeHost(host_cost_terms_);
+    }
     Free(random_states_);
     Free(raw_noise_);
     Free(candidates_);
@@ -1515,6 +1627,15 @@ class CudaMppiController::Impl {
     if (stop_event_ != nullptr) {
       cudaEventDestroy(stop_event_);
     }
+    if (snapshot_event_ != nullptr) {
+      cudaEventDestroy(snapshot_event_);
+    }
+    if (capture_event_ != nullptr) {
+      cudaEventDestroy(capture_event_);
+    }
+    if (capture_stream_ != nullptr) {
+      cudaStreamDestroy(capture_stream_);
+    }
     if (stream_ != nullptr) {
       cudaStreamDestroy(stream_);
     }
@@ -1535,6 +1656,17 @@ class CudaMppiController::Impl {
       reference.e_min.size() != horizon + 1U || reference.e_max.size() != horizon + 1U)
     {
       throw std::invalid_argument("reference does not match configured MPPI horizon");
+    }
+    // The capture buffers belong to the collector until it frees the slot, so a
+    // request made while the previous capture is uncollected is dropped.
+    const bool capture_free = !capture_busy_.load(std::memory_order_acquire);
+    const auto rollout_count = capture_free ? static_cast<std::uint32_t>(std::min<std::size_t>(
+        num_visualization_rollouts, config_.num_samples)) : 0U;
+    const bool stage_cost_terms = capture_free && capture_cost_terms;
+    if (rollout_count > 0U) {
+      // Grows once, before any work is queued; cudaFree would otherwise stall
+      // the pipeline mid-solve.
+      EnsureCaptureRollouts(rollout_count);
     }
     CheckCuda(cudaEventRecord(start_event_, stream_), "record MPPI start");
     CheckCuda(cudaMemcpyAsync(
@@ -1653,7 +1785,7 @@ class CudaMppiController::Impl {
       weights_device_, perturbations_, sigma_partials_, device_config_);
     SigmaFinalize<<<1, 32, 0, stream_>>>(
       sigma_partials_, sigma_hat_, device_config_);
-    if (capture_cost_terms) {
+    if (stage_cost_terms) {
       // ShiftNominal overwrites nominal_ in place, and the breakdown runs after
       // the solve has been measured, so the mean the candidates were drawn
       // around has to be kept aside first. Four hundred bytes on the solve path.
@@ -1688,64 +1820,16 @@ class CudaMppiController::Impl {
       &finite_count, finite_count_, sizeof(std::uint32_t),
       cudaMemcpyDeviceToHost, stream_), "copy finite rollout count");
     CheckCuda(cudaEventRecord(stop_event_, stream_), "record MPPI stop");
+    // Queued behind the stop event so it is outside the measured solve time,
+    // and before the wait so the host never blocks on it.
+    if (rollout_count > 0U || stage_cost_terms) {
+      solution.capture_id = StageCapture(
+        initial_state, initial_path_s_m, previous_control, rollout_count,
+        stage_cost_terms);
+    }
     CheckCuda(cudaEventSynchronize(stop_event_), "wait for MPPI solve");
     float elapsed_ms = 0.0F;
     CheckCuda(cudaEventElapsedTime(&elapsed_ms, start_event_, stop_event_), "measure MPPI solve");
-
-    // Visualization is intentionally sampled only when requested by the ROS
-    // runtime. The control solve has completed at this point, so these optional
-    // copies are outside the measured solve time and cannot delay GPU kernels.
-    const std::size_t rollout_count = std::min<std::size_t>(
-      num_visualization_rollouts, config_.num_samples);
-    if (rollout_count > 0U) {
-      std::vector<float> weights(config_.num_samples);
-      CheckCuda(cudaMemcpy(
-        weights.data(), weights_device_, weights.size() * sizeof(float),
-        cudaMemcpyDeviceToHost), "copy visualization weights");
-      std::vector<std::uint32_t> indices(config_.num_samples);
-      std::iota(indices.begin(), indices.end(), 0U);
-      std::partial_sort(
-        indices.begin(), indices.begin() + static_cast<std::ptrdiff_t>(rollout_count),
-        indices.end(),
-        [&weights](const std::uint32_t lhs, const std::uint32_t rhs) {
-          if (weights[lhs] == weights[rhs]) {
-            return lhs < rhs;
-          }
-          return weights[lhs] > weights[rhs];
-        });
-      solution.sampled_rollouts.reserve(rollout_count);
-      for (std::size_t rank = 0; rank < rollout_count; ++rank) {
-        const auto sample = indices[rank];
-        WeightedRollout rollout;
-        rollout.weight = weights[sample];
-        rollout.states.resize(horizon + 1U);
-        const auto * source = trajectories_ +
-          static_cast<std::size_t>(sample) * (horizon + 1U);
-        CheckCuda(cudaMemcpy(
-          rollout.states.data(), source, rollout.states.size() * sizeof(State),
-          cudaMemcpyDeviceToHost), "copy visualization rollout");
-        solution.sampled_rollouts.push_back(std::move(rollout));
-      }
-    }
-
-    // Decomposed on request only, at the ROS runtime's own reduced rate, and
-    // after the stop event so it can neither delay the control solve nor inflate
-    // the solve time the publication budget is checked against.
-    if (capture_cost_terms) {
-      EvaluateCostBreakdown<<<1, 1, 0, stream_>>>(
-        initial_state, initial_path_s_m, previous_control, nominal_snapshot_,
-        expected_, updated_, cost_terms_, track_, device_reference,
-        obstacle_field_, device_config_, costs_);
-      CheckCuda(cudaGetLastError(), "launch cost term breakdown");
-      CostTerms terms{};
-      CheckCuda(cudaMemcpyAsync(
-        &terms, cost_terms_, sizeof(CostTerms), cudaMemcpyDeviceToHost, stream_),
-        "copy cost term breakdown");
-      CheckCuda(cudaStreamSynchronize(stream_), "wait for cost term breakdown");
-      if (std::isfinite(terms.total())) {
-        solution.diagnostics.cost_terms = terms;
-      }
-    }
 
     solution.diagnostics.minimum_cost = minimum;
     solution.diagnostics.effective_sample_size = ess;
@@ -1775,6 +1859,34 @@ class CudaMppiController::Impl {
     return solution;
   }
 
+  std::optional<MppiCapture> CollectCapture() {
+    if (!capture_busy_.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+    // Free the slot however this returns; a stuck slot would silently end all
+    // later captures.
+    struct Release {
+      std::atomic<bool> & busy;
+      ~Release() { busy.store(false, std::memory_order_release); }
+    } release{capture_busy_};
+    CheckCuda(cudaEventSynchronize(capture_event_), "wait for MPPI capture");
+    MppiCapture capture;
+    capture.id = capture_id_;
+    const std::size_t steps = config_.horizon + 1U;
+    capture.sampled_rollouts.reserve(capture_rollouts_);
+    for (std::size_t rank = 0; rank < capture_rollouts_; ++rank) {
+      WeightedRollout rollout;
+      rollout.weight = host_capture_weights_[rank];
+      const State * first = host_capture_states_ + rank * steps;
+      rollout.states.assign(first, first + steps);
+      capture.sampled_rollouts.push_back(std::move(rollout));
+    }
+    if (capture_cost_terms_ && std::isfinite(host_cost_terms_->total())) {
+      capture.cost_terms = *host_cost_terms_;
+    }
+    return capture;
+  }
+
   void UpdateObstacleField(const ObstacleField & field) {
     if (!obstacle_config_.enabled) {
       return;
@@ -1791,6 +1903,11 @@ class CudaMppiController::Impl {
     // synchronization here only adds map-update jitter.
     std::copy(
       field.signed_distance_m.begin(), field.signed_distance_m.end(), obstacle_staging_);
+    // A cost breakdown still running on the capture stream reads the current
+    // field; the upload waits for it on the GPU, never on this thread.
+    CheckCuda(
+      cudaStreamWaitEvent(stream_, capture_event_, 0),
+      "order obstacle upload after MPPI capture");
     CheckCuda(cudaMemcpyAsync(
       obstacle_distance_, obstacle_staging_,
       field.signed_distance_m.size() * sizeof(float), cudaMemcpyHostToDevice, stream_),
@@ -1808,6 +1925,106 @@ class CudaMppiController::Impl {
   const MppiConfig & config() const noexcept { return config_; }
 
  private:
+  // Snapshots everything the capture reads that the next solve overwrites, then
+  // hands the rest to the capture stream. Runs on the solver thread but only
+  // enqueues work. Precondition: the capture slot is free.
+  std::uint64_t StageCapture(
+    const State & initial_state, const float initial_path_s_m,
+    const Control & previous_control, const std::uint32_t rollout_count,
+    const bool cost_terms)
+  {
+    const std::size_t horizon = config_.horizon;
+    const std::uint32_t steps = config_.horizon + 1U;
+    if (cost_terms) {
+      const auto snapshot = [this](void * target, const void * source, std::size_t bytes) {
+          CheckCuda(cudaMemcpyAsync(
+            target, source, bytes, cudaMemcpyDeviceToDevice, stream_),
+          "snapshot MPPI capture input");
+        };
+      snapshot(capture_expected_, expected_, steps * sizeof(State));
+      snapshot(capture_updated_, updated_, horizon * sizeof(Control));
+      snapshot(capture_reference_states_, reference_states_, steps * sizeof(State));
+      snapshot(capture_reference_controls_, reference_controls_, horizon * sizeof(Control));
+      snapshot(capture_reference_s_, reference_s_, steps * sizeof(float));
+      snapshot(capture_reference_speed_, reference_speed_, steps * sizeof(float));
+      snapshot(capture_reference_e_min_, reference_e_min_, steps * sizeof(float));
+      snapshot(capture_reference_e_max_, reference_e_max_, steps * sizeof(float));
+    }
+    if (rollout_count > 0U) {
+      // Stays on the solve stream because it reads the full trajectory set the
+      // next solve overwrites; it is one block and a few tens of microseconds.
+      SelectHeaviestRollouts<<<1, kSelectThreads, 0, stream_>>>(
+        weights_device_, trajectories_, config_.num_samples, rollout_count, steps,
+        capture_indices_, capture_weights_, capture_states_);
+    }
+    CheckCuda(cudaEventRecord(snapshot_event_, stream_), "record MPPI capture snapshot");
+    CheckCuda(
+      cudaStreamWaitEvent(capture_stream_, snapshot_event_, 0),
+      "order MPPI capture after snapshot");
+    if (cost_terms) {
+      const DeviceReference reference{
+        capture_reference_states_, capture_reference_controls_, capture_reference_s_,
+        capture_reference_speed_, capture_reference_e_min_, capture_reference_e_max_,
+        config_.horizon};
+      EvaluateCostBreakdown<<<1, 1, 0, capture_stream_>>>(
+        initial_state, initial_path_s_m, previous_control, nominal_snapshot_,
+        capture_expected_, capture_updated_, cost_terms_, track_, reference,
+        obstacle_field_, device_config_, costs_);
+      CheckCuda(cudaMemcpyAsync(
+        host_cost_terms_, cost_terms_, sizeof(CostTerms), cudaMemcpyDeviceToHost,
+        capture_stream_), "copy cost term breakdown");
+    }
+    if (rollout_count > 0U) {
+      CheckCuda(cudaMemcpyAsync(
+        host_capture_states_, capture_states_,
+        static_cast<std::size_t>(rollout_count) * steps * sizeof(State),
+        cudaMemcpyDeviceToHost, capture_stream_), "copy visualization rollouts");
+      CheckCuda(cudaMemcpyAsync(
+        host_capture_weights_, capture_weights_, rollout_count * sizeof(float),
+        cudaMemcpyDeviceToHost, capture_stream_), "copy visualization weights");
+    }
+    CheckCuda(cudaEventRecord(capture_event_, capture_stream_), "record MPPI capture");
+    CheckCuda(cudaGetLastError(), "launch MPPI capture");
+    capture_rollouts_ = rollout_count;
+    capture_cost_terms_ = cost_terms;
+    capture_id_ = ++next_capture_id_;
+    capture_busy_.store(true, std::memory_order_release);
+    return capture_id_;
+  }
+
+  void EnsureCaptureRollouts(const std::uint32_t count) {
+    if (count <= capture_rollout_capacity_) {
+      return;
+    }
+    FreeCaptureRollouts();
+    const std::size_t states = static_cast<std::size_t>(count) * (config_.horizon + 1U);
+    Allocate(capture_indices_, count);
+    Allocate(capture_weights_, count);
+    Allocate(capture_states_, states);
+    CheckCuda(cudaMallocHost(
+        reinterpret_cast<void **>(&host_capture_weights_), count * sizeof(float)),
+      "allocate pinned capture weights");
+    CheckCuda(cudaMallocHost(
+        reinterpret_cast<void **>(&host_capture_states_), states * sizeof(State)),
+      "allocate pinned capture rollouts");
+    capture_rollout_capacity_ = count;
+  }
+
+  void FreeCaptureRollouts() noexcept {
+    Free(capture_indices_);
+    Free(capture_weights_);
+    Free(capture_states_);
+    if (host_capture_weights_ != nullptr) {
+      cudaFreeHost(host_capture_weights_);
+      host_capture_weights_ = nullptr;
+    }
+    if (host_capture_states_ != nullptr) {
+      cudaFreeHost(host_capture_states_);
+      host_capture_states_ = nullptr;
+    }
+    capture_rollout_capacity_ = 0U;
+  }
+
   MppiConfig config_;
   VehicleParameters vehicle_;
   ObstacleConfig obstacle_config_;
@@ -1830,6 +2047,32 @@ class CudaMppiController::Impl {
   Control * nominal_snapshot_{nullptr};
   Control * updated_{nullptr};
   CostTerms * cost_terms_{nullptr};
+  // Capture slot. The solver thread writes the buffers and fields below only
+  // while capture_busy_ is false; the collector reads them only while it is
+  // true and clears it when done.
+  cudaStream_t capture_stream_{nullptr};
+  cudaEvent_t snapshot_event_{nullptr};
+  cudaEvent_t capture_event_{nullptr};
+  std::atomic<bool> capture_busy_{false};
+  std::uint64_t capture_id_{};
+  std::uint64_t next_capture_id_{};
+  std::uint32_t capture_rollouts_{};
+  bool capture_cost_terms_{false};
+  std::uint32_t capture_rollout_capacity_{};
+  State * capture_expected_{nullptr};
+  Control * capture_updated_{nullptr};
+  State * capture_reference_states_{nullptr};
+  Control * capture_reference_controls_{nullptr};
+  float * capture_reference_s_{nullptr};
+  float * capture_reference_speed_{nullptr};
+  float * capture_reference_e_min_{nullptr};
+  float * capture_reference_e_max_{nullptr};
+  std::uint32_t * capture_indices_{nullptr};
+  float * capture_weights_{nullptr};
+  State * capture_states_{nullptr};
+  float * host_capture_weights_{nullptr};
+  State * host_capture_states_{nullptr};
+  CostTerms * host_cost_terms_{nullptr};
   State * expected_{nullptr};
   State * reference_states_{nullptr};
   Control * reference_controls_{nullptr};
@@ -1892,6 +2135,10 @@ MppiSolution CudaMppiController::Solve(
   return impl_->Solve(
     initial_state, reference, previous_control, initial_path_s_m, shift_fraction,
     reset, num_visualization_rollouts, capture_cost_terms);
+}
+
+std::optional<MppiCapture> CudaMppiController::CollectCapture() {
+  return impl_->CollectCapture();
 }
 
 const MppiConfig & CudaMppiController::config() const noexcept { return impl_->config(); }

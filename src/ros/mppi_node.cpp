@@ -75,6 +75,8 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
 
   VisualizationConfig visualization;
   visualization.enabled = declare_parameter<bool>("publish_visualization", false);
+  visualization.obstacle_costmap_enabled = declare_parameter<bool>(
+    "publish_obstacle_costmap", false);
   visualization.frame_id = declare_parameter<std::string>("visualization_frame_id", "map");
   visualization.planned_path_topic = declare_parameter<std::string>(
     "expected_path_topic", "xx_mppi/expected_path");

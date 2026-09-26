@@ -33,6 +33,8 @@ MppiSolution CudaMppiController::Solve(
   return impl_->Solve();
 }
 
+std::optional<MppiCapture> CudaMppiController::CollectCapture() { return std::nullopt; }
+
 const MppiConfig & CudaMppiController::config() const noexcept { return impl_->config_; }
 bool CudaMppiController::using_cuda() const noexcept { return false; }
 void CudaMppiController::UpdateObstacleField(const ObstacleField &) {}

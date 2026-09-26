@@ -12,9 +12,11 @@ Obstacle avoidance subscribes to `/scan` (`sensor_msgs/msg/LaserScan`) in frame
 static transform. SDF construction runs on a latest-scan-wins worker thread and
 does not execute in the state callback or solver worker. See
 `docs/obstacle_avoidance.md` for deskew and cost details.
-With `publish_visualization:=true`, a normalized `nav_msgs/msg/OccupancyGrid`
-is published on `xx_mppi/obstacle_costmap` at `visualization_rate_hz` (20 Hz in
-the shipped config). Costmap conversion/publication runs on the background
+With `publish_obstacle_costmap:=true` (independent of `publish_visualization`),
+a normalized `nav_msgs/msg/OccupancyGrid` is published on
+`xx_mppi/obstacle_costmap` at `visualization_rate_hz`. It is ~1 MB per message
+at a 1 cm grid, so keep it off over WiFi while driving: it saturates the node's
+DDS socket and delays `direct_control`. Costmap conversion/publication runs on the background
 visualization worker; terminal logging has its own worker.
 
 The adapter uses `header.stamp` as `solution_pose_time`, the ENU pose quaternion
@@ -258,6 +260,7 @@ The sample bench launch enables it automatically. Set RViz's fixed frame to
 | `/xx_mppi/raceline` | `nav_msgs/Path` | Static raceline center |
 | `/xx_mppi/track_left_boundary` | `nav_msgs/Path` | Static positive-`e` boundary |
 | `/xx_mppi/track_right_boundary` | `nav_msgs/Path` | Static negative-`e` boundary |
+| `/xx_mppi/obstacle_costmap` | `nav_msgs/OccupancyGrid` | Only with `publish_obstacle_costmap:=true` |
 
 All xx_mppi ROS publishers and subscriptions use **best-effort reliability**.
 Set each RViz display's Reliability Policy to `Best Effort`; a Reliable RViz

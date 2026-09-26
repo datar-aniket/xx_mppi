@@ -19,10 +19,10 @@ num_rollouts: 15             # number of best-weighted sampled rollouts to draw
 frame: frenet
 integrator: euler
 # The driven-wheel/tire loop is stiff: dt / integration_substeps must stay below
-# I / (r^2 C), which is 0.039 s for the current vehicle profile. Startup fails
-# with the required value if this is too coarse. On this map the cost is under
-# 1 ms per solve because the rollout is dominated by the reference lookups.
-integration_substeps: 20
+# I / (r^2 C), which is 0.0035 s for ../vehicle.yaml (I 0.0005, r 0.031,
+# C 150), so dt 0.1 needs at least 29. Startup fails with the required value if
+# this is too coarse.
+integration_substeps: 30
 lambda: 2.0
 seed: 0
 
@@ -49,7 +49,7 @@ direct_control_four_wheel: true
 direct_control_four_wheel_topic: direct_control
 
 observation:
-  # EkfState steering [rad], wheel torque [N m], and motor speed [m/s] are copied
+  # EkfState steering [rad], wheel_torque_nm [N m], and wheel_speed_mps [m/s] are copied
   # without scaling. Use measured feedback for the first control transition.
   use_measured_control_feedback: false
   # Largest sideslip the body model and sideslip costs may see. Projection still
@@ -67,10 +67,11 @@ sigma:
   wheel_torque_nm: 0.5
   rear_steering_angle_rad: 0.1
 
-# Provisional torque bounds pending final vehicle characterization.
+# Torque bounds match min/max_torque_nm in ../calibration/wheel_torque_calibration.yaml;
+# ekf_mcu_driver clamps to those anyway, so wider bounds plan unrealizable torque.
 control_bounds:
-  min: {steering_angle_rad: -0.42, wheel_torque_nm: -2.0, rear_steering_angle_rad: -0.3}
-  max: {steering_angle_rad:  0.42, wheel_torque_nm: 2.0, rear_steering_angle_rad: 0.3}
+  min: {steering_angle_rad: -0.42, wheel_torque_nm: -1.57, rear_steering_angle_rad: -0.3}
+  max: {steering_angle_rad:  0.42, wheel_torque_nm: 1.57, rear_steering_angle_rad: 0.3}
 
 # Hard slew limits [unit/s]; zero leaves a channel unlimited. Every sampled
 # sequence is clamped so consecutive controls differ by at most limit * dt,

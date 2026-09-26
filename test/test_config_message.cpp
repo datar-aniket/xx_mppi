@@ -237,7 +237,7 @@ TEST(Config, RejectsAnIntegrationStepTheDrivenWheelLoopCannotHold) {
   // makes the wheel speed ring, which reverses the rollout at low speed.
   WriteFile(mppi_path, "integration_substeps: 1\n" + body);
   EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
-  WriteFile(mppi_path, "integration_substeps: 4\n" + body);
+  WriteFile(mppi_path, "integration_substeps: 30\n" + body);
   EXPECT_NO_THROW((void)LoadControllerConfig(directory.string()));
   std::filesystem::remove_all(directory);
 }

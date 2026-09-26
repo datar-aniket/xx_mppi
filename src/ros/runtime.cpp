@@ -75,8 +75,7 @@ MppiRosRuntime::MppiRosRuntime(
     if (visualization_.frame_id.empty() || visualization_.planned_path_topic.empty() ||
       visualization_.marker_topic.empty() || visualization_.raceline_topic.empty() ||
       visualization_.left_boundary_topic.empty() ||
-      visualization_.right_boundary_topic.empty() ||
-      visualization_.obstacle_costmap_topic.empty())
+      visualization_.right_boundary_topic.empty())
     {
       throw std::invalid_argument("visualization frame and topics must not be empty");
     }
@@ -91,10 +90,21 @@ MppiRosRuntime::MppiRosRuntime(
       visualization_.left_boundary_topic, static_qos);
     right_boundary_publisher_ = node_.create_publisher<nav_msgs::msg::Path>(
       visualization_.right_boundary_topic, static_qos);
+  }
+  if (visualization_.obstacle_costmap_enabled) {
+    if (visualization_.frame_id.empty() || visualization_.obstacle_costmap_topic.empty()) {
+      throw std::invalid_argument("obstacle costmap frame and topic must not be empty");
+    }
     if (controller_->config().obstacles.enabled) {
       obstacle_costmap_publisher_ = node_.create_publisher<nav_msgs::msg::OccupancyGrid>(
         visualization_.obstacle_costmap_topic, rclcpp::QoS(1).best_effort());
+    } else {
+      RCLCPP_WARN(
+        node_.get_logger(),
+        "publish_obstacle_costmap is set but obstacles are disabled; no costmap is published");
     }
+  }
+  if (visualization_.enabled || obstacle_costmap_publisher_) {
     visualization_period_ = std::chrono::nanoseconds(
       static_cast<std::int64_t>(std::llround(
         1.0e9 / static_cast<double>(controller_->config().visualization_rate_hz))));
@@ -147,14 +157,21 @@ MppiRosRuntime::MppiRosRuntime(
   if (visualization_.enabled) {
     RCLCPP_INFO(
       node_.get_logger(),
-      "Best-effort visualization enabled: Path '%s', MarkerArray '%s', costmap '%s' at %.3f Hz",
+      "Best-effort visualization enabled: Path '%s', MarkerArray '%s' at %.3f Hz",
       visualization_.planned_path_topic.c_str(), visualization_.marker_topic.c_str(),
-      visualization_.obstacle_costmap_topic.c_str(),
       static_cast<double>(controller_->config().visualization_rate_hz));
   } else {
     RCLCPP_INFO(
       node_.get_logger(),
       "Visualization disabled; launch with publish_visualization:=true to enable RViz topics");
+  }
+  if (obstacle_costmap_publisher_) {
+    RCLCPP_WARN(
+      node_.get_logger(),
+      "Obstacle costmap enabled on '%s' at %.3f Hz; each grid is large, keep it off "
+      "over WiFi while driving",
+      visualization_.obstacle_costmap_topic.c_str(),
+      static_cast<double>(controller_->config().visualization_rate_hz));
   }
 }
 
@@ -179,8 +196,7 @@ MppiRosRuntime::~MppiRosRuntime() {
     {
       std::lock_guard<std::mutex> lock(visualization_mutex_);
       stop_visualization_ = true;
-      pending_visualization_.reset();
-      pending_cost_terms_.reset();
+      pending_capture_.reset();
     }
     visualization_cv_.notify_one();
     visualization_thread_.join();
@@ -215,7 +231,8 @@ void MppiRosRuntime::PublishObstacleVisualization(
 }
 
 void MppiRosRuntime::PublishInfo(
-  const PlannedTrajectory & trajectory, const double publication_age_ms)
+  const PlannedTrajectory & trajectory, const double publication_age_ms,
+  const std::optional<CostTerms> & cost_terms)
 {
   if (trajectory.controls.empty()) {
     return;
@@ -239,10 +256,10 @@ void MppiRosRuntime::PublishInfo(
     static_cast<double>(diagnostics.effective_sample_size),
     static_cast<unsigned>(diagnostics.finite_rollouts), publication_age_ms,
     solution_age_ms);
-  if (diagnostics.cost_terms) {
+  if (cost_terms) {
     // The single largest positive term, which is the one question the summed
     // cost above can never answer.
-    const auto & terms = *diagnostics.cost_terms;
+    const auto & terms = *cost_terms;
     std::size_t dominant = 0U;
     for (std::size_t i = 1U; i < kCostTermCount; ++i) {
       if (terms.values[i] > terms.values[dominant]) {
@@ -267,47 +284,78 @@ void MppiRosRuntime::PublishCostTerms(const PlannedTrajectory & trajectory) {
       node_.get_clock()->now()));
 }
 
-void MppiRosRuntime::QueueVisualization(
-  std::shared_ptr<const PlannedTrajectory> trajectory,
-  const rclcpp::Time & publication_time)
-{
+void MppiRosRuntime::QueueCapture(CaptureWork work) {
   {
     std::lock_guard<std::mutex> lock(visualization_mutex_);
-    pending_visualization_.emplace(std::move(trajectory), publication_time);
+    pending_capture_ = std::move(work);
   }
   visualization_cv_.notify_one();
+}
+
+void MppiRosRuntime::PublishCapture(const CaptureWork & work) {
+  // Waits here, on the visualization thread, for the GPU capture the solver
+  // staged, and frees the slot so the solver can stage the next one.
+  auto capture = controller_->CollectCapture();
+  if (!capture || capture->id != work.trajectory->capture_id) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    if (work.reset_epoch != reset_epoch_) {
+      return;
+    }
+  }
+  auto trajectory = std::make_shared<PlannedTrajectory>(*work.trajectory);
+  trajectory->sampled_rollouts = std::move(capture->sampled_rollouts);
+  trajectory->diagnostics.cost_terms = capture->cost_terms;
+  if (work.visualization) {
+    try {
+      PublishTrajectoryVisualization(*trajectory, work.publication_time);
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR_THROTTLE(
+        node_.get_logger(), *node_.get_clock(), 1000,
+        "MPPI visualization publication failed: %s", error.what());
+    }
+  }
+  if (trajectory->diagnostics.cost_terms) {
+    {
+      std::lock_guard<std::mutex> lock(solution_mutex_);
+      latest_cost_terms_ = trajectory->diagnostics.cost_terms;
+    }
+    try {
+      PublishCostTerms(*trajectory);
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR_THROTTLE(
+        node_.get_logger(), *node_.get_clock(), 1000,
+        "MPPI cost term publication failed: %s", error.what());
+    }
+  }
 }
 
 void MppiRosRuntime::VisualizationWorker() {
   auto next_static_publication = std::chrono::steady_clock::now();
   while (true) {
-    std::optional<std::pair<std::shared_ptr<const PlannedTrajectory>, rclcpp::Time>> work;
+    std::optional<CaptureWork> capture_work;
     std::optional<std::pair<std::shared_ptr<const ObstacleField>, rclcpp::Time>> obstacle_work;
-    std::shared_ptr<const PlannedTrajectory> cost_terms_work;
     bool publish_static = false;
     {
       std::unique_lock<std::mutex> lock(visualization_mutex_);
       const auto wake_time = visualization_.enabled ? next_static_publication :
         std::chrono::steady_clock::time_point::max();
       visualization_cv_.wait_until(lock, wake_time, [this]() {
-        return stop_visualization_ || pending_visualization_.has_value() ||
-               pending_obstacle_visualization_.has_value() ||
-               pending_cost_terms_ != nullptr;
+        return stop_visualization_ || pending_capture_.has_value() ||
+               pending_obstacle_visualization_.has_value();
       });
       if (stop_visualization_) {
         return;
       }
-      if (pending_visualization_) {
-        work = std::move(pending_visualization_);
-        pending_visualization_.reset();
+      if (pending_capture_) {
+        capture_work = std::move(pending_capture_);
+        pending_capture_.reset();
       }
       if (pending_obstacle_visualization_) {
         obstacle_work = std::move(pending_obstacle_visualization_);
         pending_obstacle_visualization_.reset();
-      }
-      if (pending_cost_terms_) {
-        cost_terms_work = std::move(pending_cost_terms_);
-        pending_cost_terms_.reset();
       }
       const auto now = std::chrono::steady_clock::now();
       if (visualization_.enabled && now >= next_static_publication) {
@@ -324,13 +372,13 @@ void MppiRosRuntime::VisualizationWorker() {
           "MPPI static visualization publication failed: %s", error.what());
       }
     }
-    if (work) {
+    if (capture_work) {
       try {
-        PublishTrajectoryVisualization(*work->first, work->second);
+        PublishCapture(*capture_work);
       } catch (const std::exception & error) {
         RCLCPP_ERROR_THROTTLE(
           node_.get_logger(), *node_.get_clock(), 1000,
-          "MPPI visualization publication failed: %s", error.what());
+          "MPPI capture readback failed: %s", error.what());
       }
     }
     if (obstacle_work) {
@@ -340,15 +388,6 @@ void MppiRosRuntime::VisualizationWorker() {
         RCLCPP_ERROR_THROTTLE(
           node_.get_logger(), *node_.get_clock(), 1000,
           "MPPI obstacle costmap publication failed: %s", error.what());
-      }
-    }
-    if (cost_terms_work) {
-      try {
-        PublishCostTerms(*cost_terms_work);
-      } catch (const std::exception & error) {
-        RCLCPP_ERROR_THROTTLE(
-          node_.get_logger(), *node_.get_clock(), 1000,
-          "MPPI cost term publication failed: %s", error.what());
       }
     }
   }
@@ -399,7 +438,7 @@ void MppiRosRuntime::SetObstacleField(
     std::atomic_store_explicit(
       &pending_obstacle_field_, field, std::memory_order_release);
   }
-  if (visualization_.enabled && obstacle_costmap_publisher_) {
+  if (obstacle_costmap_publisher_) {
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(visualization_mutex_);
     if (now >= next_costmap_time_) {
@@ -430,12 +469,13 @@ void MppiRosRuntime::Reset() {
     latest_solution_generation_ = 0U;
     published_solution_generation_ = 0U;
     published_solution_age_ms_ = 0.0;
+    latest_cost_terms_.reset();
   }
   {
+    // pending_capture_ is kept: the worker must still collect it to free the
+    // capture slot, and drops it unpublished because its epoch is stale.
     std::lock_guard<std::mutex> visualization_lock(visualization_mutex_);
-    pending_visualization_.reset();
     pending_obstacle_visualization_.reset();
-    pending_cost_terms_.reset();
     next_costmap_time_ = std::chrono::steady_clock::now();
   }
   worker_cv_.notify_all();
@@ -449,6 +489,7 @@ void MppiRosRuntime::SolveOnce(
 {
   PlannedTrajectory trajectory;
   bool capture_visualization = false;
+  bool capture_cost_terms = false;
   try {
     if (published_control) {
       controller_->RecordPublishedControl(*published_control);
@@ -462,11 +503,17 @@ void MppiRosRuntime::SolveOnce(
     }
     capture_visualization = visualization_.enabled &&
       std::chrono::steady_clock::now() >= next_visualization_time_;
-    const bool capture_cost_terms = cost_terms_.enabled &&
+    capture_cost_terms = cost_terms_.enabled &&
       std::chrono::steady_clock::now() >= next_cost_terms_time_;
     trajectory = controller_->PlanLatest(
       capture_visualization ? controller_->config().num_rollouts : 0U,
       capture_cost_terms);
+    // A request the controller could not stage, because the worker has not yet
+    // collected the previous capture, is retried on the next solve.
+    if (trajectory.capture_id == 0U) {
+      capture_visualization = false;
+      capture_cost_terms = false;
+    }
     if (capture_cost_terms) {
       next_cost_terms_time_ += cost_terms_period_;
       const auto now = std::chrono::steady_clock::now();
@@ -496,6 +543,11 @@ void MppiRosRuntime::SolveOnce(
       static_cast<double>(solve_budget_ms));
   }
   auto solution = std::make_shared<PlannedTrajectory>(std::move(trajectory));
+  if (solution->capture_id != 0U) {
+    // Queued even if a reset has made this solve stale, so the slot is freed.
+    QueueCapture(CaptureWork{
+        solution, node_.get_clock()->now(), reset_epoch, capture_visualization});
+  }
   {
     std::lock_guard<std::mutex> worker_lock(worker_mutex_);
     if (reset_epoch != reset_epoch_) {
@@ -507,16 +559,6 @@ void MppiRosRuntime::SolveOnce(
     control_work_pending_ = true;
   }
   control_cv_.notify_one();
-  if (solution->diagnostics.cost_terms) {
-    {
-      std::lock_guard<std::mutex> lock(visualization_mutex_);
-      pending_cost_terms_ = solution;
-    }
-    visualization_cv_.notify_one();
-  }
-  if (capture_visualization) {
-    QueueVisualization(std::move(solution), node_.get_clock()->now());
-  }
 }
 
 void MppiRosRuntime::SolverWorker() {
@@ -714,15 +756,17 @@ void MppiRosRuntime::ControlPublicationCallback() {
 void MppiRosRuntime::InfoLogCallback() {
   std::shared_ptr<const PlannedTrajectory> solution;
   double publication_age_ms = 0.0;
+  std::optional<CostTerms> cost_terms;
   {
     std::lock_guard<std::mutex> lock(solution_mutex_);
     solution = published_solution_;
     publication_age_ms = published_solution_age_ms_;
+    cost_terms = latest_cost_terms_;
   }
   if (!solution) {
     return;
   }
-  PublishInfo(*solution, publication_age_ms);
+  PublishInfo(*solution, publication_age_ms, cost_terms);
 }
 
 }  // namespace xxcar::mppi

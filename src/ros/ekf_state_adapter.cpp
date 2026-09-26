@@ -105,12 +105,13 @@ VehicleObservation ToVehicleObservation(
   observation.longitudinal_acceleration_mps2 = FiniteFloat(
     message.linear_acceleration.x, "longitudinal acceleration");
   observation.sideslip_rad = sideslip;
-  // ekf_mcu_driver converts the raw VESC channels (wheel_torque_nm is motor
-  // current, motor_speed_ms is tacho counts/s) into these physical fields
-  // through its wheel torque calibration, so they are copied unscaled. They are
-  // NaN when the driver runs without that calibration, which FiniteFloat rejects.
+  // ekf_mcu_driver converts the raw VESC channels (motor_current_a [A],
+  // motor_speed_erpm [ERPM]) into these physical fields: wheel_torque_nm through
+  // its wheel torque calibration, wheel_speed_mps through the pole pairs,
+  // drivetrain ratio and wheel radius in vehicle.yaml. They are copied unscaled
+  // and are NaN when the driver lacks that config, which FiniteFloat rejects.
   observation.measured_torque_nm = FiniteFloat(
-    message.wheel_torque_measured_nm, "measured wheel torque");
+    message.wheel_torque_nm, "measured wheel torque");
   observation.measured_steering_rad = FiniteFloat(message.steering_angle, "steering angle");
   observation.driven_wheel_speed_mps = FiniteFloat(message.wheel_speed_mps, "wheel speed");
   observation.status = static_cast<std::uint32_t>(message.solution_status) |

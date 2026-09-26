@@ -53,10 +53,10 @@ class SampleEkfStatePublisher(Node):
         message.twist.linear.x = self.speed_mps
         message.angular_velocity.z = yaw_rate
         message.side_slip_rad = 0.0
-        message.wheel_torque_nm = 0.0
+        message.motor_current_a = 0.0
         message.steering_angle = math.atan(0.312 / self.radius_m)
-        message.motor_speed_ms = self.speed_mps
-        message.wheel_torque_measured_nm = 0.0
+        message.motor_speed_erpm = 0.0
+        message.wheel_torque_nm = 0.0
         message.wheel_speed_mps = self.speed_mps
         message.solution_status = (
             EkfState.SOLUTION_STATUS_ATTITUDE_VALID

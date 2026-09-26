@@ -40,6 +40,7 @@ def _launch_node(context):
         "require_vesc": LaunchConfiguration("require_vesc"),
         "state_qos_depth": LaunchConfiguration("state_qos_depth"),
         "publish_visualization": LaunchConfiguration("publish_visualization"),
+        "publish_obstacle_costmap": LaunchConfiguration("publish_obstacle_costmap"),
         "visualization_frame_id": LaunchConfiguration("visualization_frame_id"),
         "expected_path_topic": LaunchConfiguration("expected_path_topic"),
         "rollouts_topic": LaunchConfiguration("rollouts_topic"),
@@ -126,6 +127,12 @@ def generate_launch_description():
         DeclareLaunchArgument("require_vesc", default_value="true"),
         DeclareLaunchArgument("state_qos_depth", default_value="1"),
         DeclareLaunchArgument("publish_visualization", default_value="false"),
+        DeclareLaunchArgument(
+            "publish_obstacle_costmap",
+            default_value="false",
+            description="Publish the ~1 MB obstacle OccupancyGrid. Independent of "
+                        "publish_visualization; keep off over WiFi while driving.",
+        ),
         DeclareLaunchArgument("visualization_frame_id", default_value="map"),
         DeclareLaunchArgument(
             "expected_path_topic", default_value="xx_mppi/expected_path"

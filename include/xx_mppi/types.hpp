@@ -328,11 +328,21 @@ struct WeightedRollout {
   float weight{};
 };
 
+// Debug output of one solve, read back after the solve has returned. The solver
+// only enqueues it; CollectCapture waits for it on the caller's thread.
+struct MppiCapture {
+  std::uint64_t id{};
+  std::vector<WeightedRollout> sampled_rollouts;  // highest weight first
+  std::optional<CostTerms> cost_terms{};
+};
+
 struct MppiSolution {
   std::vector<State> states;       // T + 1 internally
   std::vector<Control> controls;   // T
-  std::vector<WeightedRollout> sampled_rollouts;  // optional, highest weight first
   MppiDiagnostics diagnostics{};
+  // Nonzero when this solve staged a capture; pass it to CollectCapture. Zero
+  // when none was requested or the previous capture is still uncollected.
+  std::uint64_t capture_id{};
 };
 
 }  // namespace xxcar::mppi

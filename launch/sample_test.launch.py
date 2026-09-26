@@ -33,6 +33,7 @@ def generate_launch_description():
                         "publish_direct_control": False,
                         "direct_control_topic": "xx_mppi/sample_direct_control",
                         "publish_visualization": True,
+                        "publish_obstacle_costmap": True,
                     }
                 ],
             ),
