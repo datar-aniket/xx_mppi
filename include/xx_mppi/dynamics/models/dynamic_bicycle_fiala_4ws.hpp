@@ -129,11 +129,15 @@ class DynamicBicycleFiala4ws {
       (a * front.longitudinal_n * sin_delta + a * front.lateral_n * cos_delta -
       b * rear.longitudinal_n * sin_delta_rear - b * rear.lateral_n * cos_delta_rear) /
       yaw_inertia;
+    // Rolling resistance acts along the velocity, so it only enters the speed
+    // equation. tanh fades it through zero speed instead of switching sign.
+    const float rolling_resistance = parameters_.rolling_resistance_n *
+      tanhf(speed_input / kRollingResistanceBlendMps);
     const float speed_acceleration =
       (cos_delta_minus_beta * front.longitudinal_n -
       sin_delta_minus_beta * front.lateral_n +
       cos_delta_rear_minus_beta * rear.longitudinal_n -
-      sin_delta_rear_minus_beta * rear.lateral_n) / mass;
+      sin_delta_rear_minus_beta * rear.lateral_n - rolling_resistance) / mass;
     const float sideslip_rate = -yaw_rate +
       (sin_delta_minus_beta * front.longitudinal_n +
       cos_delta_minus_beta * front.lateral_n +

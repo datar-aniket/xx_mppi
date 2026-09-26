@@ -96,7 +96,13 @@ struct VehicleParameters {
   float driven_wheel_inertia_kgm2{0.01F};
   float front_brake_bias{0.0F};
   bool locked_awd{false};
+  // On-ground rolling and drivetrain resistance [N] acting on the chassis
+  // against the direction of travel (Fiala models only). Faded in over
+  // +/-kRollingResistanceBlendMps so a stationary car sees none.
+  float rolling_resistance_n{0.0F};
 };
+
+constexpr float kRollingResistanceBlendMps = 0.1F;
 
 struct AdaptationConfig {
   bool adaptive_lambda{true};

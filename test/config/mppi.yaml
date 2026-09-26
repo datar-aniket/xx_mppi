@@ -18,11 +18,12 @@ num_rollouts: 15             # number of best-weighted sampled rollouts to draw
 # raceline for the cost. Both use the same body model, costs and messages.
 frame: frenet
 integrator: euler
-# The driven-wheel/tire loop is stiff: dt / integration_substeps must stay below
-# I / (r^2 C), which is 0.0035 s for ../vehicle.yaml (I 0.0005, r 0.031,
-# C 150), so dt 0.1 needs at least 29. Startup fails with the required value if
-# this is too coarse.
-integration_substeps: 30
+# The driven-wheel/tire loop is stiff. Its slip decays at
+# C (r^2 / I + 1 / m) / 1 m/s = 698 /s for vehicle.yaml (C 150 + 150 with
+# locked AWD, I 0.0005, r 0.031, m 2.465). Euler with a 75% margin needs
+# dt / integration_substeps <= 1.5 / 698 = 2.15 ms, so dt 0.1 needs at least 47.
+# Startup fails with the required value if this is too coarse.
+integration_substeps: 50
 lambda: 2.0
 seed: 0
 

@@ -237,7 +237,13 @@ TEST(Config, RejectsAnIntegrationStepTheDrivenWheelLoopCannotHold) {
   // makes the wheel speed ring, which reverses the rollout at low speed.
   WriteFile(mppi_path, "integration_substeps: 1\n" + body);
   EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+  // 30 passes the single-axle I / (r^2 C) bound but is unstable once locked AWD
+  // doubles the slip stiffness (h * rate = 2.33 > 2).
   WriteFile(mppi_path, "integration_substeps: 30\n" + body);
+  EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+  // 50 is the smallest round value inside the 75% Euler margin (47 required)
+  // for the fixture's locked-AWD profile.
+  WriteFile(mppi_path, "integration_substeps: 50\n" + body);
   EXPECT_NO_THROW((void)LoadControllerConfig(directory.string()));
   std::filesystem::remove_all(directory);
 }

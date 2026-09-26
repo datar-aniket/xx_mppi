@@ -139,6 +139,11 @@ void LoadVehicle(const YAML::Node & root, VehicleParameters & output) {
   output.front_brake_bias = GetGroupedOr(
     vehicle, "drivetrain", "front_brake_bias", output.front_brake_bias);
   output.locked_awd = GetGroupedOr(vehicle, "drivetrain", "locked_awd", output.locked_awd);
+  output.rolling_resistance_n = GetGroupedOr(
+    vehicle, "drivetrain", "rolling_resistance_n", output.rolling_resistance_n);
+  if (!std::isfinite(output.rolling_resistance_n) || output.rolling_resistance_n < 0.0F) {
+    throw std::runtime_error("vehicle drivetrain.rolling_resistance_n must be finite and >= 0");
+  }
 }
 
 void LoadNamedStateWeights(const YAML::Node & node, CostWeights & weights) {
@@ -504,27 +509,39 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   if (config.model_kind == ModelKind::kDynamicBicycleFiala ||
     config.model_kind == ModelKind::kDynamicBicycleFiala4ws)
   {
-    // The analytic Fiala driven-wheel state is the stiffest mode: the tire
-    // force reacts to slip almost instantly, so its explicit integration step
-    // is constrained by -r^2 C / I. This bound does not describe a learned
-    // derivative model and must not force extra TensorRT evaluations.
-    const float stiffest_stiffness = std::max(
-      config.vehicle.front_cornering_stiffness_nprad,
-      config.vehicle.rear_cornering_stiffness_nprad);
-    const float marginal_step_s = 2.0F * config.vehicle.driven_wheel_inertia_kgm2 /
-      std::max(
-        config.vehicle.wheel_radius_m * config.vehicle.wheel_radius_m *
-        stiffest_stiffness, 1.0e-9F);
+    // The analytic Fiala driven-wheel state is the stiffest mode. The slip
+    // z = wheel speed - vehicle speed decays at
+    //   C (r^2 / I + 1 / m) / max(|v_x|, 1 m/s),
+    // where C sums the slip stiffness of every axle the driven-wheel state
+    // drives (both with locked AWD) and 1 m/s is the models' slip-ratio
+    // denominator floor, so it is the worst case. Explicit integration needs
+    // step * rate inside the method's stability interval on the negative real
+    // axis; 75% of it keeps the ringing decaying at least 2x per Euler
+    // substep. This bound does not describe a learned derivative model and
+    // must not force extra TensorRT evaluations.
+    constexpr float kMinimumSlipSpeedMps = 1.0F;
+    constexpr float kStabilityMargin = 0.75F;
+    const auto & vehicle = config.vehicle;
+    const float slip_stiffness = vehicle.rear_cornering_stiffness_nprad +
+      (vehicle.locked_awd ? vehicle.front_cornering_stiffness_nprad : 0.0F);
+    const float slip_rate = slip_stiffness / kMinimumSlipSpeedMps *
+      (vehicle.wheel_radius_m * vehicle.wheel_radius_m /
+      std::max(vehicle.driven_wheel_inertia_kgm2, 1.0e-9F) +
+      1.0F / std::max(vehicle.mass_kg, 1.0e-9F));
+    const float stability_interval =
+      config.integrator == IntegratorKind::kRungeKutta4 ? 2.785F : 2.0F;
+    const float maximum_step_s =
+      kStabilityMargin * stability_interval / std::max(slip_rate, 1.0e-9F);
     const auto substeps = static_cast<float>(
       config.mppi.integration_substeps == 0U ? 1U : config.mppi.integration_substeps);
     const float step_s = config.mppi.dt_s / substeps;
-    if (!(step_s < 0.5F * marginal_step_s)) {
+    if (!(step_s <= maximum_step_s)) {
       const auto required = static_cast<unsigned>(std::ceil(
-          config.mppi.dt_s / (0.5F * marginal_step_s)));
+          config.mppi.dt_s / maximum_step_s));
       throw std::runtime_error(
               "integration step " + std::to_string(step_s) +
               " s exceeds the driven-wheel stability limit " +
-              std::to_string(0.5F * marginal_step_s) +
+              std::to_string(maximum_step_s) +
               " s for this vehicle profile; raise integration_substeps to at least " +
               std::to_string(required) + ", lower dt, or re-identify "
               "driven_wheel_inertia_kgm2 / cornering stiffness");
