@@ -96,6 +96,33 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
   cost_terms.topic = declare_parameter<std::string>(
     "cost_terms_topic", "xx_mppi/cost_terms");
 
+  GripStatusConfig grip_status;
+  grip_status.enabled = declare_parameter<bool>("publish_grip_status", true);
+  grip_status.topic = declare_parameter<std::string>("grip_status_topic", "xx_mppi/grip");
+  grip_status.rate_hz = declare_parameter<double>("grip_status_rate_hz", 25.0);
+
+  MuEstimateConfig mu_estimate;
+  mu_estimate.enabled = declare_parameter<bool>("estimate_mu", true);
+  mu_estimate.topic = declare_parameter<std::string>("mu_estimate_topic", "xx_mppi/mu_estimate");
+  mu_estimate.rate_hz = declare_parameter<double>("mu_estimate_rate_hz", 50.0);
+  auto & estimator = mu_estimate.estimator;
+  const auto declare_float = [this](const char * name, const float fallback) {
+      return static_cast<float>(declare_parameter<double>(name, static_cast<double>(fallback)));
+    };
+  estimator.mu_min = declare_float("mu_estimate_mu_min", estimator.mu_min);
+  estimator.mu_max = declare_float("mu_estimate_mu_max", estimator.mu_max);
+  estimator.mu_step = declare_float("mu_estimate_mu_step", estimator.mu_step);
+  estimator.minimum_speed_mps = declare_float(
+    "mu_estimate_minimum_speed_mps", estimator.minimum_speed_mps);
+  estimator.minimum_sensitivity = declare_float(
+    "mu_estimate_minimum_sensitivity", estimator.minimum_sensitivity);
+  estimator.maximum_residual_mps2 = declare_float(
+    "mu_estimate_maximum_residual_mps2", estimator.maximum_residual_mps2);
+  estimator.longitudinal_weight = declare_float(
+    "mu_estimate_longitudinal_weight", estimator.longitudinal_weight);
+  estimator.time_constant_s = declare_float(
+    "mu_estimate_time_constant_s", estimator.time_constant_s);
+
   if (config_directory.empty() || state_topic.empty() ||
     (!direct_control.enabled && trajectory_topic.empty()))
   {
@@ -113,7 +140,7 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
 
   runtime_ = std::make_unique<MppiRosRuntime>(
     *this, config_directory, trajectory_topic, direct_control, std::move(visualization),
-    std::move(cost_terms));
+    std::move(cost_terms), std::move(grip_status), std::move(mu_estimate));
   state_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   scan_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   rclcpp::SubscriptionOptions state_options;

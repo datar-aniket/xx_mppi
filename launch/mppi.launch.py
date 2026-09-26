@@ -54,6 +54,9 @@ def _launch_node(context):
         "obstacle_costmap_topic": LaunchConfiguration("obstacle_costmap_topic"),
         "publish_cost_terms": LaunchConfiguration("publish_cost_terms"),
         "cost_terms_topic": LaunchConfiguration("cost_terms_topic"),
+        "publish_grip_status": LaunchConfiguration("publish_grip_status"),
+        "grip_status_rate_hz": LaunchConfiguration("grip_status_rate_hz"),
+        "estimate_mu": LaunchConfiguration("estimate_mu"),
     }
 
     # Empty launch arguments leave these values to config/mppi.yaml. A supplied
@@ -157,6 +160,20 @@ def generate_launch_description():
         DeclareLaunchArgument("publish_cost_terms", default_value="false"),
         DeclareLaunchArgument(
             "cost_terms_topic", default_value="xx_mppi/cost_terms"
+        ),
+        DeclareLaunchArgument(
+            "publish_grip_status",
+            default_value="true",
+            description="Publish xxcar_msgs/GripStatus on xx_mppi/grip: measured "
+                        "vs MPPI-predicted tire grip use (~1 KB per message).",
+        ),
+        DeclareLaunchArgument("grip_status_rate_hz", default_value="25.0"),
+        DeclareLaunchArgument(
+            "estimate_mu",
+            default_value="true",
+            description="Fit the tire-road friction coefficient online and publish "
+                        "it (std_msgs/Float32) on xx_mppi/mu_estimate. Publish only; "
+                        "the solver keeps using vehicle.yaml.",
         ),
     ]
     return LaunchDescription(

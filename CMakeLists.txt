@@ -29,7 +29,9 @@ find_package(xxcar_msgs REQUIRED)
 add_library(xx_mppi_core SHARED
   src/controller/builder.cpp
   src/controller/config.cpp
+  src/controller/grip_monitor.cpp
   src/controller/mppi_controller.cpp
+  src/controller/mu_estimator.cpp
   src/costs/cost_evaluator.cpp
   src/costs/obstacle_cost.cpp
   src/dynamics/rollout.cpp
@@ -51,6 +53,7 @@ add_library(xx_mppi_ros SHARED
   src/ros/cost_terms_message.cpp
   src/ros/direct_control_message.cpp
   src/ros/ekf_state_adapter.cpp
+  src/ros/grip_status_message.cpp
   src/ros/mppi_node.cpp
   src/ros/runtime.cpp
   src/ros/runtime_config.cpp
@@ -183,6 +186,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_dynamics_costs xx_mppi_core)
   target_compile_definitions(test_dynamics_costs PRIVATE
     XX_MPPI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test")
+
+  ament_add_gtest(test_grip test/test_grip.cpp)
+  target_link_libraries(test_grip xx_mppi_core)
+
+  ament_add_gtest(test_mu_estimator test/test_mu_estimator.cpp)
+  target_link_libraries(test_mu_estimator xx_mppi_core)
 
   ament_add_gtest(test_control_rate_limit test/test_control_rate_limit.cpp)
   target_link_libraries(test_control_rate_limit xx_mppi_core)

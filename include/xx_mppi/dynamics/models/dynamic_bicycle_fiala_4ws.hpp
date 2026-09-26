@@ -21,6 +21,22 @@ namespace xxcar::mppi {
 //
 // Setting control[kRearSteering] to zero reduces every equation below to the
 // front-steer-only form exactly, with no small-angle approximation.
+// Tire state behind one Derivative evaluation, for host-side diagnostics such as
+// the grip monitor. Forces are in each axle's own wheel frame; body_a*_mps2 are
+// the body-frame specific forces an accelerometer at the CG would read.
+struct TireReport {
+  TireForces front{};
+  TireForces rear{};
+  float front_load_n{};
+  float rear_load_n{};
+  float front_slip_angle_rad{};
+  float rear_slip_angle_rad{};
+  float front_slip_ratio{};
+  float rear_slip_ratio{};
+  float body_ax_mps2{};
+  float body_ay_mps2{};
+};
+
 class DynamicBicycleFiala4ws {
  public:
   explicit XXCAR_MODEL_4WS_HD DynamicBicycleFiala4ws(const VehicleParameters & parameters)
@@ -28,6 +44,15 @@ class DynamicBicycleFiala4ws {
 
   [[nodiscard]] XXCAR_MODEL_4WS_HD BodyDerivative Derivative(
     const BodyState & state, const Control & control) const
+  {
+    return Evaluate(state, control, nullptr);
+  }
+
+  // Derivative plus, when report is non-null, the tire state that produced it.
+  // The rollout kernel only calls Derivative, where report is a constant null
+  // and the reporting branch compiles away.
+  [[nodiscard]] XXCAR_MODEL_4WS_HD BodyDerivative Evaluate(
+    const BodyState & state, const Control & control, TireReport * report) const
   {
     constexpr float gravity = 9.81F;
     constexpr float minimum_longitudinal_speed = 1.0F;
@@ -152,6 +177,24 @@ class DynamicBicycleFiala4ws {
     const float wheel_speed_rate = parameters_.wheel_radius_m *
       (applied_driveline_torque - parameters_.wheel_radius_m * tire_reaction_force) /
       fmaxf(parameters_.driven_wheel_inertia_kgm2, 1.0e-6F);
+    if (report != nullptr) {
+      report->front = front;
+      report->rear = rear;
+      report->front_load_n = front_load;
+      report->rear_load_n = rear_load;
+      report->front_slip_angle_rad = front_slip_angle;
+      report->rear_slip_angle_rad = rear_slip_angle;
+      report->front_slip_ratio = front_slip_ratio;
+      report->rear_slip_ratio = rear_slip_ratio;
+      report->body_ax_mps2 =
+        (cos_delta * front.longitudinal_n - sin_delta * front.lateral_n +
+        cos_delta_rear * rear.longitudinal_n - sin_delta_rear * rear.lateral_n -
+        cos_beta * rolling_resistance) / mass;
+      report->body_ay_mps2 =
+        (sin_delta * front.longitudinal_n + cos_delta * front.lateral_n +
+        sin_delta_rear * rear.longitudinal_n + cos_delta_rear * rear.lateral_n -
+        sin_beta * rolling_resistance) / mass;
+    }
     return BodyDerivative{
       yaw_acceleration, speed_acceleration, sideslip_rate, wheel_speed_rate};
   }

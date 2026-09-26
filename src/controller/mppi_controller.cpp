@@ -141,9 +141,15 @@ PlannedTrajectory MppiController::PlanLatest(
   result.projection = projection;
   result.frame = config_.mppi.frame;
   result.states.reserve(config_.mppi.horizon);
+  result.body_states.reserve(config_.mppi.horizon);
   for (std::size_t i = 0; i < config_.mppi.horizon; ++i) {
     const auto point = StateToEnu(raceline_, solution.states[i], config_.mppi.frame);
     result.states.push_back(CartesianTrajectoryState{point.first, point.second});
+    BodyState body;
+    for (std::size_t j = 0; j < kBodyStateDim; ++j) {
+      body[j] = solution.states[i][j];
+    }
+    result.body_states.push_back(body);
   }
   result.capture_id = solution.capture_id;
 

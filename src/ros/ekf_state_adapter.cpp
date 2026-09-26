@@ -105,6 +105,11 @@ VehicleObservation ToVehicleObservation(
   observation.longitudinal_acceleration_mps2 = FiniteFloat(
     message.linear_acceleration.x, "longitudinal acceleration");
   observation.sideslip_rad = sideslip;
+  // Diagnostics only, so a bad value is carried as NaN instead of rejecting
+  // the whole observation.
+  observation.lateral_acceleration_mps2 = std::isfinite(message.linear_acceleration.y) ?
+    static_cast<float>(message.linear_acceleration.y) :
+    std::numeric_limits<float>::quiet_NaN();
   // ekf_mcu_driver converts the raw VESC channels (motor_current_a [A],
   // motor_speed_erpm [ERPM]) into these physical fields: wheel_torque_nm through
   // its wheel torque calibration, wheel_speed_mps through the pole pairs,

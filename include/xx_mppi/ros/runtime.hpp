@@ -13,15 +13,27 @@
 #include <geometry_msgs/msg/twist.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/float32.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <xxcar_msgs/msg/vehicle_control_trajectory.hpp>
 
 #include "xx_mppi/controller/mppi_controller.hpp"
 #include "xx_mppi/ros/cost_terms_message.hpp"
+#include "xx_mppi/ros/grip_status_message.hpp"
 #include "xx_mppi/ros/direct_control_message.hpp"
+#include "xx_mppi/controller/mu_estimator.hpp"
 #include "xx_mppi/ros/visualization.hpp"
 
 namespace xxcar::mppi {
+
+// Online friction estimate, published as the filtered load-weighted mu. It
+// holds the vehicle.yaml value until the first informative sample.
+struct MuEstimateConfig {
+  bool enabled{true};
+  std::string topic{"xx_mppi/mu_estimate"};
+  double rate_hz{50.0};
+  MuEstimatorConfig estimator{};
+};
 
 // Reusable ROS runtime beneath the final custom vehicle-state subscriber. The
 // adapter calls OnObservation from every message callback. It only replaces a
@@ -35,7 +47,9 @@ class MppiRosRuntime {
     const std::string & trajectory_topic = "vehicle_control_trajectory",
     DirectControlConfig direct_control = {},
     VisualizationConfig visualization = {},
-    CostTermsConfig cost_terms = {});
+    CostTermsConfig cost_terms = {},
+    GripStatusConfig grip_status = {},
+    MuEstimateConfig mu_estimate = {});
   ~MppiRosRuntime();
 
   void OnObservation(const VehicleObservation & observation);
@@ -68,6 +82,10 @@ class MppiRosRuntime {
   void SolverWorker();
   void ControlWorker();
   void InfoWorker();
+  void GripWorker();
+  void PublishGripStatus();
+  void MuWorker();
+  void PublishMuEstimate();
   void SolveOnce(
     const VehicleObservation & observation, std::uint64_t observation_generation,
     std::uint64_t reset_epoch, const std::optional<Control> & published_control);
@@ -89,6 +107,18 @@ class MppiRosRuntime {
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr obstacle_costmap_publisher_;
   CostTermsConfig cost_terms_;
   rclcpp::Publisher<xxcar_msgs::msg::MppiCostTerms>::SharedPtr cost_terms_publisher_;
+  GripStatusConfig grip_status_;
+  rclcpp::Publisher<xxcar_msgs::msg::GripStatus>::SharedPtr grip_status_publisher_;
+  // Touched only by the grip thread.
+  GripMonitor grip_monitor_;
+  std::int64_t grip_last_pose_time_ns_{};
+  std::uint64_t grip_reset_epoch_{};
+  MuEstimateConfig mu_estimate_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr mu_estimate_publisher_;
+  // Touched only by the mu thread. Deliberately kept across Reset: an EKF
+  // reset does not change the floor.
+  std::unique_ptr<MuEstimator> mu_estimator_;
+  std::int64_t mu_last_pose_time_ns_{};
   std::chrono::nanoseconds solve_period_{};
   std::chrono::nanoseconds control_publication_period_{};
   std::chrono::nanoseconds info_log_period_{};
@@ -138,6 +168,8 @@ class MppiRosRuntime {
   std::thread solver_thread_;
   std::thread control_thread_;
   std::thread info_thread_;
+  std::thread grip_thread_;
+  std::thread mu_thread_;
   std::thread visualization_thread_;
 };
 

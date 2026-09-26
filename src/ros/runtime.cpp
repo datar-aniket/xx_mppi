@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "xx_mppi/controller/builder.hpp"
+#include "xx_mppi/dynamics/grip.hpp"
 #include "xx_mppi/ros/direct_control_message.hpp"
 #include "xx_mppi/ros/trajectory_message.hpp"
 
@@ -19,12 +20,15 @@ namespace xxcar::mppi {
 MppiRosRuntime::MppiRosRuntime(
   rclcpp::Node & node, const std::string & config_directory,
   const std::string & trajectory_topic, DirectControlConfig direct_control,
-  VisualizationConfig visualization, CostTermsConfig cost_terms)
+  VisualizationConfig visualization, CostTermsConfig cost_terms,
+  GripStatusConfig grip_status, MuEstimateConfig mu_estimate)
 : node_(node),
   controller_(MppiControllerBuilder::FromConfigDirectory(config_directory)),
   direct_control_(std::move(direct_control)),
   visualization_(std::move(visualization)),
-  cost_terms_(std::move(cost_terms))
+  cost_terms_(std::move(cost_terms)),
+  grip_status_(std::move(grip_status)),
+  mu_estimate_(std::move(mu_estimate))
 {
   RCLCPP_INFO(
     node_.get_logger(), "Loaded raceline '%s' (%zu points, %.3f m lap)",
@@ -153,6 +157,41 @@ MppiRosRuntime::MppiRosRuntime(
   solver_thread_ = std::thread([this]() {SolverWorker();});
   control_thread_ = std::thread([this]() {ControlWorker();});
   info_thread_ = std::thread([this]() {InfoWorker();});
+  if (grip_status_.enabled) {
+    if (grip_status_.topic.empty() || !(grip_status_.rate_hz > 0.0) ||
+      !std::isfinite(grip_status_.rate_hz))
+    {
+      throw std::invalid_argument("grip status topic must be set and its rate positive");
+    }
+    grip_status_publisher_ = node_.create_publisher<xxcar_msgs::msg::GripStatus>(
+      grip_status_.topic, rclcpp::QoS(1).best_effort());
+    grip_thread_ = std::thread([this]() {GripWorker();});
+    RCLCPP_INFO(
+      node_.get_logger(), "Grip status on '%s' at %.3f Hz%s", grip_status_.topic.c_str(),
+      grip_status_.rate_hz,
+      ModelHasTireForces(controller_->config().model_kind) ? "" :
+      " (this model has no tire forces; predicted fields are NaN)");
+  }
+  if (mu_estimate_.enabled) {
+    if (mu_estimate_.topic.empty() || !(mu_estimate_.rate_hz > 0.0) ||
+      !std::isfinite(mu_estimate_.rate_hz))
+    {
+      throw std::invalid_argument("mu estimate topic must be set and its rate positive");
+    }
+    // The fit always runs the Fiala tire model on vehicle.yaml, whatever model
+    // the solver plans with.
+    mu_estimator_ = std::make_unique<MuEstimator>(
+      controller_->config().vehicle, mu_estimate_.estimator);
+    mu_estimate_publisher_ = node_.create_publisher<std_msgs::msg::Float32>(
+      mu_estimate_.topic, rclcpp::QoS(1).best_effort());
+    mu_thread_ = std::thread([this]() {MuWorker();});
+    RCLCPP_INFO(
+      node_.get_logger(), "Online mu estimate on '%s' at %.3f Hz (vehicle.yaml mu %.3f)",
+      mu_estimate_.topic.c_str(), mu_estimate_.rate_hz,
+      static_cast<double>(mu_estimator_->nominal_mu()));
+  } else {
+    RCLCPP_INFO(node_.get_logger(), "Online mu estimate disabled");
+  }
   visualization_thread_ = std::thread([this]() {VisualizationWorker();});
   if (visualization_.enabled) {
     RCLCPP_INFO(
@@ -191,6 +230,12 @@ MppiRosRuntime::~MppiRosRuntime() {
   }
   if (info_thread_.joinable()) {
     info_thread_.join();
+  }
+  if (grip_thread_.joinable()) {
+    grip_thread_.join();
+  }
+  if (mu_thread_.joinable()) {
+    mu_thread_.join();
   }
   if (visualization_thread_.joinable()) {
     {
@@ -669,6 +714,119 @@ void MppiRosRuntime::InfoWorker() {
     if (next_log <= now) {
       next_log = now + info_log_period_;
     }
+  }
+}
+
+void MppiRosRuntime::GripWorker() {
+  const auto period = std::chrono::nanoseconds(
+    static_cast<std::int64_t>(std::llround(1.0e9 / grip_status_.rate_hz)));
+  auto next = std::chrono::steady_clock::now() + period;
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lock(worker_mutex_);
+      if (worker_cv_.wait_until(lock, next, [this]() {return stop_workers_;})) {
+        return;
+      }
+    }
+    PublishGripStatus();
+    const auto now = std::chrono::steady_clock::now();
+    next += period;
+    if (next <= now) {
+      next = now + period;
+    }
+  }
+}
+
+void MppiRosRuntime::PublishGripStatus() {
+  std::optional<VehicleObservation> observation;
+  std::uint64_t reset_epoch = 0U;
+  {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    observation = latest_observation_;
+    reset_epoch = reset_epoch_;
+  }
+  std::shared_ptr<const PlannedTrajectory> solution;
+  {
+    std::lock_guard<std::mutex> lock(solution_mutex_);
+    solution = published_solution_;
+  }
+  if (reset_epoch != grip_reset_epoch_) {
+    grip_monitor_.Reset();
+    grip_reset_epoch_ = reset_epoch;
+  }
+  // Only new observations: the measured half would otherwise repeat.
+  if (!observation || !solution || observation->pose_time_ns == grip_last_pose_time_ns_) {
+    return;
+  }
+  grip_last_pose_time_ns_ = observation->pose_time_ns;
+  try {
+    grip_status_publisher_->publish(ToGripStatusMessage(
+        *observation, *solution, controller_->config().vehicle,
+        controller_->config().model_kind, grip_monitor_));
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR_THROTTLE(
+      node_.get_logger(), *node_.get_clock(), 1000,
+      "MPPI grip status publication failed: %s", error.what());
+  }
+}
+
+void MppiRosRuntime::MuWorker() {
+  const auto period = std::chrono::nanoseconds(
+    static_cast<std::int64_t>(std::llround(1.0e9 / mu_estimate_.rate_hz)));
+  auto next = std::chrono::steady_clock::now() + period;
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lock(worker_mutex_);
+      if (worker_cv_.wait_until(lock, next, [this]() {return stop_workers_;})) {
+        return;
+      }
+    }
+    PublishMuEstimate();
+    const auto now = std::chrono::steady_clock::now();
+    next += period;
+    if (next <= now) {
+      next = now + period;
+    }
+  }
+}
+
+void MppiRosRuntime::PublishMuEstimate() {
+  std::optional<VehicleObservation> observation;
+  {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    observation = latest_observation_;
+  }
+  if (!observation || observation->pose_time_ns == mu_last_pose_time_ns_) {
+    return;
+  }
+  mu_last_pose_time_ns_ = observation->pose_time_ns;
+  BodyState state;
+  state[kYawRate] = observation->yaw_rate_radps;
+  state[kSpeed] = observation->speed_mps;
+  state[kSideslip] = observation->sideslip_rad;
+  state[kDrivenWheelSpeed] = observation->driven_wheel_speed_mps;
+  Control control;
+  control[kSteering] = observation->measured_steering_rad;
+  control[kWheelTorque] = observation->measured_torque_nm;
+  // The EKF carries no rear steering angle, so a 4WS car uses the rear command
+  // being applied now; front-steer-only cars have none.
+  if (controller_->config().model_kind == ModelKind::kDynamicBicycleFiala4ws) {
+    std::lock_guard<std::mutex> lock(solution_mutex_);
+    if (published_solution_ && !published_solution_->controls.empty()) {
+      control[kRearSteering] = published_solution_->controls.front()[kRearSteering];
+    }
+  }
+  const auto estimate = mu_estimator_->Update(
+    static_cast<double>(observation->pose_time_ns) * 1.0e-9, state, control,
+    observation->longitudinal_acceleration_mps2, observation->lateral_acceleration_mps2);
+  try {
+    std_msgs::msg::Float32 message;
+    message.data = estimate.mu;
+    mu_estimate_publisher_->publish(message);
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR_THROTTLE(
+      node_.get_logger(), *node_.get_clock(), 1000,
+      "MPPI mu estimate publication failed: %s", error.what());
   }
 }
 

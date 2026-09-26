@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -22,6 +23,9 @@ struct VehicleObservation {
   float speed_mps{};
   float yaw_rate_radps{};
   float longitudinal_acceleration_mps2{};
+  // Body-frame lateral acceleration, positive left. Diagnostics only (grip
+  // monitor); NaN when the EKF does not provide it.
+  float lateral_acceleration_mps2{std::numeric_limits<float>::quiet_NaN()};
   float sideslip_rad{};
   float measured_torque_nm{};
   float measured_steering_rad{};
@@ -39,6 +43,9 @@ struct PlannedTrajectory {
   float dt_s{};
   std::vector<CartesianTrajectoryState> states;  // T, terminal x[T] omitted
   std::vector<Control> controls;                 // T
+  // Body part of the planned states x[0..T-1] (yaw rate, speed, sideslip,
+  // driven wheel speed), for the grip monitor.
+  std::vector<BodyState> body_states;            // T
   // Empty from PlanLatest; filled from CollectCapture off the solver thread.
   std::vector<WeightedRollout> sampled_rollouts;  // highest weight first
   MppiDiagnostics diagnostics{};
