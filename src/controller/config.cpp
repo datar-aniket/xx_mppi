@@ -144,6 +144,11 @@ void LoadVehicle(const YAML::Node & root, VehicleParameters & output) {
   if (!std::isfinite(output.rolling_resistance_n) || output.rolling_resistance_n < 0.0F) {
     throw std::runtime_error("vehicle drivetrain.rolling_resistance_n must be finite and >= 0");
   }
+  output.load_transfer_height_m = GetGroupedOr(
+    vehicle, "geometry", "load_transfer_height_m", output.load_transfer_height_m);
+  if (!std::isfinite(output.load_transfer_height_m) || output.load_transfer_height_m < 0.0F) {
+    throw std::runtime_error("vehicle geometry.load_transfer_height_m must be finite and >= 0");
+  }
 }
 
 void LoadNamedStateWeights(const YAML::Node & node, CostWeights & weights) {

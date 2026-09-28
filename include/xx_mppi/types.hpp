@@ -100,6 +100,12 @@ struct VehicleParameters {
   // against the direction of travel (Fiala models only). Faded in over
   // +/-kRollingResistanceBlendMps so a stationary car sees none.
   float rolling_resistance_n{0.0F};
+  // Longitudinal load transfer (Fiala models only): the tires' net body-x
+  // force m * ax acts at ground level, so m * ax * h / L of normal load moves
+  // from the front axle to the rear. h is the effective CG height, including
+  // what the suspension geometry transfers without pitching. Zero keeps the
+  // static axle loads.
+  float load_transfer_height_m{0.0F};
 };
 
 constexpr float kRollingResistanceBlendMps = 0.1F;

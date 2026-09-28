@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "xx_mppi/controller/config.hpp"
 #include "xx_mppi/controller/cuda_mppi.hpp"
 #include "xx_mppi/reference/raceline.hpp"
 
@@ -21,23 +22,31 @@ float Percentile(const std::vector<float> & sorted, const float fraction) {
 }  // namespace
 
 int main(int argc, char ** argv) {
-  if (argc < 2 || argc > 3) {
-    std::cerr << "usage: xxcar_benchmark_mppi RACELINE.csv [ITERATIONS=500]\n";
+  if (argc < 2 || argc > 4) {
+    std::cerr << "usage: xxcar_benchmark_mppi RACELINE.csv [ITERATIONS=500] [CONFIG_DIR]\n"
+      "  CONFIG_DIR: an xx_mppi config directory (mppi.yaml, model.yaml, ...) to\n"
+      "  benchmark instead of the built-in defaults; its raceline_path is ignored.\n";
     return 2;
   }
   try {
-    const std::size_t iterations = argc == 3 ?
+    const std::size_t iterations = argc >= 3 ?
       static_cast<std::size_t>(std::stoul(argv[2])) : 500U;
     if (iterations < 10U) {
       throw std::invalid_argument("ITERATIONS must be at least 10");
     }
     const auto raceline = xxcar::mppi::Raceline::LoadCsv(argv[1]);
-    xxcar::mppi::MppiConfig config;
-    xxcar::mppi::CostWeights costs;
-    xxcar::mppi::VehicleParameters vehicle;
+    xxcar::mppi::ControllerConfig loaded;
+    loaded.model_kind = xxcar::mppi::ModelKind::kDynamicBicycleFiala;
+    if (argc == 4) {
+      loaded = xxcar::mppi::LoadControllerConfig(argv[3]);
+      if (loaded.mppi.frame != xxcar::mppi::FrameKind::kFrenet) {
+        throw std::invalid_argument("the benchmark starts from Frenet reference states");
+      }
+    }
+    const auto & config = loaded.mppi;
     xxcar::mppi::CudaMppiController controller(
-      config, costs, vehicle, xxcar::mppi::ObstacleConfig{},
-      xxcar::mppi::ModelKind::kDynamicBicycleFiala, raceline);
+      config, loaded.costs, loaded.vehicle, loaded.obstacles, loaded.model_kind, raceline,
+      loaded.integrator, loaded.neural_model_path, loaded.projection_window_m);
     const auto reference = raceline.Sample(
       raceline.s_min(), config.horizon, config.dt_s);
     xxcar::mppi::State initial = reference.states.front();
@@ -63,7 +72,9 @@ int main(int argc, char ** argv) {
     std::sort(gpu_times.begin(), gpu_times.end());
     const double wall_ms = std::chrono::duration<double, std::milli>(wall_end - wall_start).count();
     std::cout << "K=" << config.num_samples << " T=" << config.horizon
-      << " dt=" << config.dt_s << " iterations=" << iterations << '\n'
+      << " dt=" << config.dt_s << " substeps=" << config.integration_substeps
+      << " load_transfer_height_m=" << loaded.vehicle.load_transfer_height_m
+      << " iterations=" << iterations << '\n'
       << "GPU ms median=" << Percentile(gpu_times, 0.50F)
       << " p95=" << Percentile(gpu_times, 0.95F)
       << " p99=" << Percentile(gpu_times, 0.99F)

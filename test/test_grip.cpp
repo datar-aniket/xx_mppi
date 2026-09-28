@@ -126,6 +126,74 @@ TEST(Grip, RollingResistanceSlowsACoastingCarAndVanishesAtRest) {
     DynamicBicycleFiala4ws(parameters).Derivative(rest, Command(0.0F, 0.0F))[kSpeed]);
 }
 
+// m * h * ax / L of normal load moves from the front axle to the rear, with ax
+// the body acceleration of the tire forces at the static loads, and the total
+// stays m g.
+TEST(LoadTransfer, MovesLoadRearUnderDriveAndForwardUnderBraking) {
+  auto parameters = Carxx();
+  parameters.load_transfer_height_m = 0.05F;
+  const DynamicBicycleFiala4ws transferring(parameters);
+  const DynamicBicycleFiala4ws static_loads(Carxx());
+  const float static_axle_load = parameters.mass_kg * 9.81F / 2.0F;
+  const float wheelbase = parameters.cg_to_front_m + parameters.cg_to_rear_m;
+  struct Case {
+    float wheel_speed;
+    float torque;
+  };
+  // Wheels 5% fast under drive torque, 5% slow under braking torque.
+  for (const Case drive : {Case{4.2F, 0.2F}, Case{3.8F, -0.2F}}) {
+    const BodyState straight{{0.0F, 4.0F, 0.0F, drive.wheel_speed}};
+    const auto control = Command(0.0F, drive.torque);
+    TireReport before;
+    TireReport after;
+    (void)static_loads.Evaluate(straight, control, &before);
+    (void)transferring.Evaluate(straight, control, &after);
+    const float transfer = parameters.mass_kg * parameters.load_transfer_height_m *
+      before.body_ax_mps2 / wheelbase;
+    EXPECT_GT(transfer * drive.torque, 0.0F);
+    EXPECT_GT(std::abs(transfer), 1.0F);
+    EXPECT_NEAR(after.rear_load_n - static_axle_load, transfer, 1.0e-4F);
+    EXPECT_NEAR(static_axle_load - after.front_load_n, transfer, 1.0e-4F);
+    EXPECT_NEAR(after.front_load_n + after.rear_load_n, 2.0F * static_axle_load, 1.0e-4F);
+  }
+}
+
+// Braking loads the front axle and unloads the rear, so the same corner
+// rotates harder than at static loads; drive does the opposite.
+TEST(LoadTransfer, BrakingRotatesACornerAndDriveStraightensIt) {
+  auto parameters = Carxx();
+  parameters.load_transfer_height_m = 0.05F;
+  const DynamicBicycleFiala4ws transferring(parameters);
+  const DynamicBicycleFiala4ws static_loads(Carxx());
+  const BodyState braking{{2.0F, 4.0F, -0.05F, 3.8F}};
+  const BodyState driving{{2.0F, 4.0F, -0.05F, 4.2F}};
+  EXPECT_GT(
+    transferring.Derivative(braking, Command(0.3F, -0.2F))[kYawRate],
+    static_loads.Derivative(braking, Command(0.3F, -0.2F))[kYawRate] + 1.0F);
+  EXPECT_LT(
+    transferring.Derivative(driving, Command(0.3F, 0.2F))[kYawRate],
+    static_loads.Derivative(driving, Command(0.3F, 0.2F))[kYawRate] - 0.5F);
+}
+
+TEST(LoadTransfer, ReportAndForceBalanceMatchTheDerivative) {
+  auto parameters = Carxx();
+  parameters.load_transfer_height_m = 0.05F;
+  const DynamicBicycleFiala4ws model(parameters);
+  const auto state = Cornering();
+  const auto control = Command(0.2F, 0.3F, -0.1F);
+  TireReport report;
+  const auto plain = model.Derivative(state, control);
+  const auto reported = model.Evaluate(state, control, &report);
+  for (std::size_t i = 0; i < kBodyStateDim; ++i) {
+    EXPECT_EQ(plain[i], reported[i]);
+  }
+  EXPECT_LT(report.front_load_n, report.rear_load_n);
+  const float beta = state[kSideslip];
+  EXPECT_NEAR(
+    plain[kSpeed],
+    report.body_ax_mps2 * std::cos(beta) + report.body_ay_mps2 * std::sin(beta), 1.0e-4F);
+}
+
 TEST(GripMonitor, LatchesWhenTheCarFallsShortOfTheModelAndReleases) {
   GripMonitor monitor;
   const double dt = 0.02;

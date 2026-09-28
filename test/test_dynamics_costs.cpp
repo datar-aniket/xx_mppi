@@ -162,13 +162,7 @@ TEST(Dynamics, FialaUsesPositiveFloorAtZeroSpeed) {
     model.Derivative(stopped, control)[kYawRate]);
 }
 
-// The 4WS model is an independent copy of the Fiala physics, not a wrapper
-// around it, so that a mistake in the rear-steer terms cannot reach a
-// front-steer-only run. This test is what keeps the two copies honest: with the
-// rear angle at zero every rear term must collapse to the front-steer-only
-// form, exactly, with no small-angle approximation.
-TEST(Dynamics, ZeroRearSteerReproducesTheFrontSteerOnlyModel) {
-  const auto parameters = TestVehicle();
+void ExpectZeroRearSteerEquivalence(const VehicleParameters & parameters) {
   const DynamicBicycleFiala front_only(parameters);
   const DynamicBicycleFiala4ws four_wheel(parameters);
 
@@ -190,6 +184,20 @@ TEST(Dynamics, ZeroRearSteerReproducesTheFrontSteerOnlyModel) {
         four_wheel.Derivative(state, control),
         front_only.Derivative(state, control));
     }
+  }
+}
+
+// The 4WS model is an independent copy of the Fiala physics, not a wrapper
+// around it, so that a mistake in the rear-steer terms cannot reach a
+// front-steer-only run. This test is what keeps the two copies honest: with the
+// rear angle at zero every rear term must collapse to the front-steer-only
+// form, exactly, with no small-angle approximation. Load transfer is checked
+// too, since each model closes its load loop on its own.
+TEST(Dynamics, ZeroRearSteerReproducesTheFrontSteerOnlyModel) {
+  auto with_load_transfer = TestVehicle();
+  with_load_transfer.load_transfer_height_m = 0.1F;
+  for (const auto & parameters : {TestVehicle(), with_load_transfer}) {
+    ExpectZeroRearSteerEquivalence(parameters);
   }
 }
 

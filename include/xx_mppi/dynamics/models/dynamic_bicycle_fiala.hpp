@@ -28,8 +28,8 @@ class DynamicBicycleFiala {
     const float a = parameters_.cg_to_front_m;
     const float b = parameters_.cg_to_rear_m;
     const float wheelbase = fmaxf(a + b, 1.0e-6F);
-    const float front_load = mass * gravity * b / wheelbase;
-    const float rear_load = mass * gravity * a / wheelbase;
+    const float static_front_load = mass * gravity * b / wheelbase;
+    const float static_rear_load = mass * gravity * a / wheelbase;
 
     const float yaw_rate = state[kYawRate];
     const float speed_input = state[kSpeed];
@@ -89,27 +89,50 @@ class DynamicBicycleFiala {
     const float requested_front_force =
       front_brake_torque / fmaxf(parameters_.wheel_radius_m, 1.0e-6F) * low_speed_fade;
 
-    TireForces front;
-    if (parameters_.locked_awd) {
-      front = FialaCombinedSlip(
-        front_slip_angle, front_slip_ratio, parameters_.front_cornering_stiffness_nprad,
-        parameters_.front_friction_coefficient, front_load);
-    } else {
-      front = FialaSimpleCoupling(
-        front_slip_angle, parameters_.front_cornering_stiffness_nprad,
-        parameters_.front_friction_coefficient, front_load, requested_front_force);
+    // Rolling resistance acts along the velocity, so it only enters the speed
+    // equation and the body acceleration. tanh fades it through zero speed
+    // instead of switching sign.
+    const float rolling_resistance = parameters_.rolling_resistance_n *
+      tanhf(speed_input / kRollingResistanceBlendMps);
+
+    const auto front_tire = [&](const float load) {
+        if (parameters_.locked_awd) {
+          return FialaCombinedSlip(
+            front_slip_angle, front_slip_ratio, parameters_.front_cornering_stiffness_nprad,
+            parameters_.front_friction_coefficient, load);
+        }
+        return FialaSimpleCoupling(
+          front_slip_angle, parameters_.front_cornering_stiffness_nprad,
+          parameters_.front_friction_coefficient, load, requested_front_force);
+      };
+    const auto rear_tire = [&](const float load) {
+        return FialaCombinedSlip(
+          rear_slip_angle, rear_slip_ratio, parameters_.rear_cornering_stiffness_nprad,
+          parameters_.rear_friction_coefficient, load);
+      };
+
+    float front_load = static_front_load;
+    float rear_load = static_rear_load;
+    TireForces front = front_tire(front_load);
+    TireForces rear = rear_tire(rear_load);
+    if (parameters_.load_transfer_height_m > 0.0F) {
+      // One fixed-point pass on the axle loads, as in DynamicBicycleFiala4ws:
+      // the body-x acceleration of the forces at static loads moves
+      // m * h * ax / L of load from the front axle to the rear.
+      const float body_ax = (cos_delta * front.longitudinal_n - sin_delta * front.lateral_n +
+        rear.longitudinal_n - cos_beta * rolling_resistance) / mass;
+      const float transfer = clampf(
+        mass * parameters_.load_transfer_height_m * body_ax / wheelbase,
+        -static_rear_load, static_front_load);
+      front_load -= transfer;
+      rear_load += transfer;
+      front = front_tire(front_load);
+      rear = rear_tire(rear_load);
     }
-    const auto rear = FialaCombinedSlip(
-      rear_slip_angle, rear_slip_ratio, parameters_.rear_cornering_stiffness_nprad,
-      parameters_.rear_friction_coefficient, rear_load);
 
     const float yaw_acceleration =
       (a * front.longitudinal_n * sin_delta + a * front.lateral_n * cos_delta -
       b * rear.lateral_n) / yaw_inertia;
-    // Rolling resistance acts along the velocity, so it only enters the speed
-    // equation. tanh fades it through zero speed instead of switching sign.
-    const float rolling_resistance = parameters_.rolling_resistance_n *
-      tanhf(speed_input / kRollingResistanceBlendMps);
     const float speed_acceleration =
       (cos_delta_minus_beta * front.longitudinal_n -
       sin_delta_minus_beta * front.lateral_n + cos_beta * rear.longitudinal_n +

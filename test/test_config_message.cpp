@@ -248,6 +248,30 @@ TEST(Config, RejectsAnIntegrationStepTheDrivenWheelLoopCannotHold) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(Config, LoadsTheLoadTransferHeight) {
+  const auto directory = MakeOverlayConfig("xx_mppi_test_load_transfer_config");
+  const auto vehicle_path = directory / "vehicle.yaml";
+  std::ifstream original(vehicle_path);
+  const std::string body(
+    (std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+  original.close();
+  // Absent means static axle loads.
+  EXPECT_FLOAT_EQ(LoadControllerConfig(directory.string()).vehicle.load_transfer_height_m, 0.0F);
+
+  const std::string geometry = "  geometry:\n";
+  const auto split = body.find(geometry) + geometry.size();
+  ASSERT_NE(body.find(geometry), std::string::npos);
+  const auto with_height = [&](const std::string & value) {
+      return body.substr(0, split) + "    load_transfer_height_m: " + value + "\n" +
+             body.substr(split);
+    };
+  WriteFile(vehicle_path, with_height("0.05"));
+  EXPECT_FLOAT_EQ(LoadControllerConfig(directory.string()).vehicle.load_transfer_height_m, 0.05F);
+  WriteFile(vehicle_path, with_height("-0.01"));
+  EXPECT_THROW((void)LoadControllerConfig(directory.string()), std::runtime_error);
+  std::filesystem::remove_all(directory);
+}
+
 TEST(Config, UsesUnitPreservingMeasuredControlFeedback) {
   const auto config = LoadControllerConfig(XX_MPPI_CONFIG_DIR);
   EXPECT_TRUE(config.use_measured_control_feedback);

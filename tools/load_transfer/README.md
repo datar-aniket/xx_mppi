@@ -7,6 +7,9 @@ Offline analysis of two questions about longitudinal load transfer in the Fiala 
 2. How much load transfer does logged driving support, and does it improve the model's
    predictions?
 
+The result is `vehicle.geometry.load_transfer_height_m` in `vehicle.yaml`. Both Fiala models
+apply it with one fixed-point pass on the axle loads inside each derivative evaluation.
+
 ## Running it
 
 ```bash
