@@ -77,6 +77,7 @@ struct DeviceReference {
   const float * e_min;
   const float * e_max;
   std::uint16_t horizon;
+  float pass_limit_s;
 };
 
 struct DeviceCosts {
@@ -479,7 +480,8 @@ __device__ float StateCost(
     frenet.lateral_deviation, e_min, e_max, weights.boundary,
     weights.boundary_margin, weights.crash_buffer);
   AddCost<kBreakdown>(cost, terms, kTermBoundary, boundary.shaping_cost);
-  crashed = crashed || (latch_violations && boundary.violated);
+  crashed = crashed || (latch_violations &&
+    (boundary.violated || frenet.path_evolution > reference.pass_limit_s));
   if (crashed) {
     AddCost<kBreakdown>(cost, terms, kTermCrash, weights.crash * crash_discount);
     if constexpr (kBreakdown) {
@@ -1696,9 +1698,10 @@ class CudaMppiController::Impl {
         CheckCuda(cudaMemsetAsync(nominal_, 0, horizon * sizeof(Control), stream_), "reset nominal");
       }
     }
+    reference_pass_limit_s_ = reference.pass_limit_s_m;
     const DeviceReference device_reference{
       reference_states_, reference_controls_, reference_s_, reference_speed_,
-      reference_e_min_, reference_e_max_, config_.horizon};
+      reference_e_min_, reference_e_max_, config_.horizon, reference_pass_limit_s_};
     const int sample_blocks = static_cast<int>((config_.num_samples + 255U) / 256U);
     GenerateNoise<<<sample_blocks, 256, 0, stream_>>>(
       random_states_, raw_noise_, device_config_);
@@ -1922,6 +1925,11 @@ class CudaMppiController::Impl {
     obstacle_field_.valid = false;
   }
 
+  void SetVelocityOverspeedMultiplier(const float multiplier) noexcept {
+    // Kernels receive costs_ by value at launch, so this only affects later solves.
+    costs_.velocity_overspeed_multiplier = multiplier;
+  }
+
   const MppiConfig & config() const noexcept { return config_; }
 
  private:
@@ -1965,7 +1973,7 @@ class CudaMppiController::Impl {
       const DeviceReference reference{
         capture_reference_states_, capture_reference_controls_, capture_reference_s_,
         capture_reference_speed_, capture_reference_e_min_, capture_reference_e_max_,
-        config_.horizon};
+        config_.horizon, reference_pass_limit_s_};
       EvaluateCostBreakdown<<<1, 1, 0, capture_stream_>>>(
         initial_state, initial_path_s_m, previous_control, nominal_snapshot_,
         capture_expected_, capture_updated_, cost_terms_, track_, reference,
@@ -2067,6 +2075,8 @@ class CudaMppiController::Impl {
   float * capture_reference_speed_{nullptr};
   float * capture_reference_e_min_{nullptr};
   float * capture_reference_e_max_{nullptr};
+  // Scalar, passed by value: set by each Solve and read by its own capture.
+  float reference_pass_limit_s_{std::numeric_limits<float>::infinity()};
   std::uint32_t * capture_indices_{nullptr};
   float * capture_weights_{nullptr};
   State * capture_states_{nullptr};
@@ -2148,5 +2158,9 @@ void CudaMppiController::UpdateObstacleField(const ObstacleField & field) {
 }
 
 void CudaMppiController::ClearObstacleField() { impl_->ClearObstacleField(); }
+
+void CudaMppiController::SetVelocityOverspeedMultiplier(const float multiplier) noexcept {
+  impl_->SetVelocityOverspeedMultiplier(multiplier);
+}
 
 }  // namespace xxcar::mppi

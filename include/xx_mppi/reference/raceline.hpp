@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -9,6 +10,16 @@
 #include "xx_mppi/types.hpp"
 
 namespace xxcar::mppi {
+
+// Lowers the sampled reference speed: every point is scaled, then capped so
+// that braking at deceleration_mps2 stops the reference at stop_s_m. The
+// reference s grid advances with the limited speed, so path evolution
+// tracking agrees with the lowered speed profile.
+struct SpeedLimit {
+  float scale{1.0F};
+  float stop_s_m{std::numeric_limits<float>::infinity()};  // unwrapped
+  float deceleration_mps2{1.0F};
+};
 
 class Raceline {
  public:
@@ -32,7 +43,8 @@ class Raceline {
   [[nodiscard]] std::pair<float, float> ToCartesian(
     float unwrapped_s_m, float lateral_deviation_m) const;
   [[nodiscard]] ReferenceHorizon Sample(
-    float unwrapped_s0_m, std::uint16_t horizon, float dt_s) const;
+    float unwrapped_s0_m, std::uint16_t horizon, float dt_s,
+    const SpeedLimit & limit = {}) const;
 
  private:
   [[nodiscard]] float WrapOrClamp(float s_m) const;

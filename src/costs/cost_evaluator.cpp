@@ -99,7 +99,8 @@ float CostEvaluator::Evaluate(
       state[kLateralDeviation], e_min, e_max, weights_.boundary,
       weights_.boundary_margin_m, weights_.crash_buffer_m);
     add(kTermBoundary, boundary.shaping_cost);
-    crashed = crashed || boundary.violated;
+    crashed = crashed || boundary.violated ||
+      state[kPathEvolution] > reference.pass_limit_s_m;
     if (crashed) {
       add(kTermCrash, weights_.crash * discount);
       if (terms != nullptr && terms->first_crash_step == kNoCostLatch) {

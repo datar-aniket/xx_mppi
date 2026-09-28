@@ -8,11 +8,6 @@
 
 namespace xxcar::mppi {
 
-struct Point2D {
-  float east_m{};
-  float north_m{};
-};
-
 class SignedDistanceFieldBuilder {
  public:
   explicit SignedDistanceFieldBuilder(ObstacleConfig config);

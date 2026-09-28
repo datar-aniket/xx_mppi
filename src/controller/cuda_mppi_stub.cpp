@@ -39,5 +39,6 @@ const MppiConfig & CudaMppiController::config() const noexcept { return impl_->c
 bool CudaMppiController::using_cuda() const noexcept { return false; }
 void CudaMppiController::UpdateObstacleField(const ObstacleField &) {}
 void CudaMppiController::ClearObstacleField() {}
+void CudaMppiController::SetVelocityOverspeedMultiplier(float) noexcept {}
 
 }  // namespace xxcar::mppi

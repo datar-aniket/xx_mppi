@@ -301,6 +301,13 @@ void MppiRosRuntime::PublishInfo(
     static_cast<double>(diagnostics.effective_sample_size),
     static_cast<unsigned>(diagnostics.finite_rollouts), publication_age_ms,
     solution_age_ms);
+  if (trajectory.no_overtake) {
+    RCLCPP_INFO(
+      node_.get_logger(), "MPPI no-overtake: lead gap=%.2f m planned speed=%.2f m/s",
+      static_cast<double>(trajectory.lead_gap_m),
+      trajectory.body_states.empty() ? 0.0 :
+      static_cast<double>(trajectory.body_states.front()[kSpeed]));
+  }
   if (cost_terms) {
     // The single largest positive term, which is the one question the summed
     // cost above can never answer.

@@ -306,7 +306,8 @@ Projection Raceline::Project(
 }
 
 ReferenceHorizon Raceline::Sample(
-  const float unwrapped_s0_m, const std::uint16_t horizon, const float dt_s) const
+  const float unwrapped_s0_m, const std::uint16_t horizon, const float dt_s,
+  const SpeedLimit & limit) const
 {
   if (horizon == 0 || !(dt_s > 0.0F)) {
     throw std::invalid_argument("reference horizon and dt must be positive");
@@ -323,17 +324,28 @@ ReferenceHorizon Raceline::Sample(
   float s_query = unwrapped_s0_m;
   for (std::size_t i = 0; i <= horizon; ++i) {
     const auto point = Interpolate(s_query);
+    float speed = point.speed_mps * limit.scale;
+    if (std::isfinite(limit.stop_s_m)) {
+      speed = std::min(speed, std::sqrt(
+        2.0F * limit.deceleration_mps2 * std::max(limit.stop_s_m - s_query, 0.0F)));
+    }
+    // Yaw rate and wheel speed are proportional to speed along a fixed path.
+    const float ratio = point.speed_mps > 1.0e-3F ? speed / point.speed_mps : 1.0F;
     result.s_grid[i] = s_query;
-    result.speed_profile[i] = point.speed_mps;
+    result.speed_profile[i] = speed;
     result.e_min[i] = point.e_min_m;
     result.e_max[i] = point.e_max_m;
     result.states[i] = State{
-      point.yaw_rate_radps, point.speed_mps, point.sideslip_rad,
-      point.driven_wheel_speed_mps, 0.0F, 0.0F, s_query};
+      point.yaw_rate_radps * ratio, speed, point.sideslip_rad,
+      point.driven_wheel_speed_mps * ratio, 0.0F, 0.0F, s_query};
     if (i < horizon) {
       result.controls[i] = Control{point.steering_rad, point.torque_nm};
       result.curvature[i] = point.curvature_inv_m;
-      s_query += point.speed_mps * dt_s;
+      float advance = speed * dt_s;
+      if (std::isfinite(limit.stop_s_m)) {
+        advance = std::min(advance, std::max(limit.stop_s_m - s_query, 0.0F));
+      }
+      s_query += advance;
     }
   }
   return result;

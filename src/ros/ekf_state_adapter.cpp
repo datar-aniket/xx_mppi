@@ -121,6 +121,8 @@ VehicleObservation ToVehicleObservation(
   observation.driven_wheel_speed_mps = FiniteFloat(message.wheel_speed_mps, "wheel speed");
   observation.status = static_cast<std::uint32_t>(message.solution_status) |
     (static_cast<std::uint32_t>(message.source_valid) << 8U);
+  // In manual the trigger belongs to localization (known pose / ICP recovery).
+  observation.no_overtake = message.rc_auto && message.rc_trigger_high;
   return observation;
 }
 

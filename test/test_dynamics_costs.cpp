@@ -242,6 +242,26 @@ TEST(Costs, CrashedRolloutCostsMoreThanInBoundsRollout) {
   EXPECT_GT(crashed_cost, safe_cost + 1000.0F);
 }
 
+TEST(Costs, PassingNoOvertakeLimitLatchesCrash) {
+  const auto raceline = Raceline::LoadCsv(TestCsv());
+  auto reference = raceline.Sample(0.0F, 5U, 0.1F);
+  const CostEvaluator evaluator(CostWeights{}, 0.1F);
+  CostTerms free_terms;
+  const float free_cost = evaluator.Evaluate(
+    reference.states, reference.controls, reference, Control{},
+    nullptr, nullptr, nullptr, &free_terms);
+  EXPECT_EQ(free_terms.first_crash_step, kNoCostLatch);
+
+  // The reference advances 0.1 m per step, so s = 0.25 is passed at step 3.
+  reference.pass_limit_s_m = 0.25F;
+  CostTerms limited_terms;
+  const float limited_cost = evaluator.Evaluate(
+    reference.states, reference.controls, reference, Control{},
+    nullptr, nullptr, nullptr, &limited_terms);
+  EXPECT_EQ(limited_terms.first_crash_step, 3U);
+  EXPECT_GT(limited_cost, free_cost + 1000.0F);
+}
+
 TEST(Costs, CrashPaddingShrinksBothBoundsTowardRaceline) {
   constexpr float e_min = -1.0F;
   constexpr float e_max = 1.0F;

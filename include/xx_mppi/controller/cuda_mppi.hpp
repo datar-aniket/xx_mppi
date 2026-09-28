@@ -49,6 +49,8 @@ class CudaMppiController {
   [[nodiscard]] std::optional<MppiCapture> CollectCapture();
   void UpdateObstacleField(const ObstacleField & field);
   void ClearObstacleField();
+  // Takes effect from the next Solve. Call from the solver thread.
+  void SetVelocityOverspeedMultiplier(float multiplier) noexcept;
 
   [[nodiscard]] const MppiConfig & config() const noexcept;
   [[nodiscard]] bool using_cuda() const noexcept;

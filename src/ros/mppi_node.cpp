@@ -234,6 +234,11 @@ void MppiNode::StateCallback(
     }
 
     runtime_->OnObservation(observation);
+    if (observation.no_overtake != no_overtake_) {
+      no_overtake_ = observation.no_overtake;
+      RCLCPP_WARN(
+        get_logger(), "No-overtake mode %s", no_overtake_ ? "ON" : "OFF");
+    }
     if (pose_history_) {
       const float history_sideslip = std::isfinite(observation.sideslip_rad) ?
         observation.sideslip_rad : 0.0F;
@@ -364,6 +369,7 @@ void MppiNode::ObstacleWorker() {
     auto field = std::make_shared<ObstacleField>(field_builder_->Build(
         persistent_obstacles, deskewed->reference_pose,
         deskewed->reference_stamp_ns, ++obstacle_generation_));
+    field->points = persistent_obstacles;
     {
       std::lock_guard<std::mutex> lock(pose_history_mutex_);
       if (history_snapshot.second != pose_epoch_) {

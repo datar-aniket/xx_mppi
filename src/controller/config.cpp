@@ -312,6 +312,22 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   config.maximum_model_sideslip_rad = GetOr(
     observation, "maximum_model_sideslip_rad", config.maximum_model_sideslip_rad);
 
+  const auto no_overtake = mppi_yaml["no_overtake"];
+  config.no_overtake.speed_scale = GetOr(
+    no_overtake, "speed_scale", config.no_overtake.speed_scale);
+  config.no_overtake.gap_minimum_m = GetOr(
+    no_overtake, "gap_minimum_m", config.no_overtake.gap_minimum_m);
+  config.no_overtake.pass_limit_gap_m = GetOr(
+    no_overtake, "pass_limit_gap_m", config.no_overtake.pass_limit_gap_m);
+  config.no_overtake.deceleration_mps2 = GetOr(
+    no_overtake, "deceleration_mps2", config.no_overtake.deceleration_mps2);
+  config.no_overtake.lookahead_m = GetOr(
+    no_overtake, "lookahead_m", config.no_overtake.lookahead_m);
+  config.no_overtake.wall_margin_m = GetOr(
+    no_overtake, "wall_margin_m", config.no_overtake.wall_margin_m);
+  config.no_overtake.overspeed_multiplier = GetOr(
+    no_overtake, "overspeed_multiplier", config.no_overtake.overspeed_multiplier);
+
   const std::string integrator = GetOr(mppi_yaml, "integrator", std::string("euler"));
   if (integrator == "euler") {
     config.integrator = IntegratorKind::kEuler;
@@ -504,6 +520,18 @@ ControllerConfig LoadControllerConfig(const std::string & config_directory) {
   }
   if (config.raceline_path.empty()) {
     throw std::runtime_error("model.yaml must define raceline_path");
+  }
+  const auto & no_overtake_config = config.no_overtake;
+  if (!(no_overtake_config.speed_scale > 0.0F && no_overtake_config.speed_scale <= 1.0F) ||
+    !(no_overtake_config.gap_minimum_m >= 0.0F) ||
+    !(no_overtake_config.pass_limit_gap_m >= 0.0F &&
+    no_overtake_config.pass_limit_gap_m <= no_overtake_config.gap_minimum_m) ||
+    !(no_overtake_config.deceleration_mps2 > 0.0F) ||
+    !(no_overtake_config.lookahead_m > 0.0F && no_overtake_config.lookahead_m <= 20.0F) ||
+    !(no_overtake_config.wall_margin_m >= 0.0F) ||
+    !(no_overtake_config.overspeed_multiplier >= 0.0F))
+  {
+    throw std::runtime_error("invalid no_overtake configuration");
   }
 
   if (config.model_kind == ModelKind::kDynamicBicycleFiala ||

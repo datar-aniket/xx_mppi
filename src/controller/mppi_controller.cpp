@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -32,9 +33,77 @@ MppiController::MppiController(ControllerConfig config, Raceline raceline)
 
 void MppiController::UpdateObstacleField(const ObstacleField & field) {
   optimizer_.UpdateObstacleField(field);
+  obstacle_points_ = field.points;
 }
 
-void MppiController::ClearObstacleField() { optimizer_.ClearObstacleField(); }
+void MppiController::ClearObstacleField() {
+  optimizer_.ClearObstacleField();
+  obstacle_points_.clear();
+}
+
+std::optional<float> FindLeadGap(
+  const Raceline & raceline, const float s0_m, const std::vector<Point2D> & points,
+  const float lookahead_m, const float wall_margin_m)
+{
+  // Brute-force nearest centreline sample: ~100 samples against a few hundred
+  // confirmed returns is well under a millisecond, where Raceline::Project
+  // would scan the whole raceline for every point.
+  constexpr float kStepM = 0.05F;
+  const auto count = static_cast<std::size_t>(std::ceil(lookahead_m / kStepM)) + 1U;
+  std::vector<ReferencePoint> samples;
+  samples.reserve(count);
+  float largest_bound = 0.0F;
+  for (std::size_t i = 0; i < count; ++i) {
+    samples.push_back(raceline.Interpolate(s0_m + static_cast<float>(i) * kStepM));
+    largest_bound = std::max(
+      largest_bound, std::max(std::abs(samples.back().e_min_m), samples.back().e_max_m));
+  }
+  // Nothing farther than this from the window's first sample can be inside it.
+  const float reach = lookahead_m + largest_bound + kStepM;
+  const auto & origin = samples.front();
+
+  std::optional<float> gap;
+  for (const auto & point : points) {
+    const float origin_east = point.east_m - origin.east_m;
+    const float origin_north = point.north_m - origin.north_m;
+    if (origin_east * origin_east + origin_north * origin_north > reach * reach) {
+      continue;
+    }
+    std::size_t nearest = 0U;
+    float nearest_squared = std::numeric_limits<float>::infinity();
+    for (std::size_t i = 0; i < count; ++i) {
+      const float d_east = point.east_m - samples[i].east_m;
+      const float d_north = point.north_m - samples[i].north_m;
+      const float squared = d_east * d_east + d_north * d_north;
+      if (squared < nearest_squared) {
+        nearest_squared = squared;
+        nearest = i;
+      }
+    }
+    const auto & sample = samples[nearest];
+    // EPIC path tangent is (-sin(phi), cos(phi)); positive e is its left normal,
+    // as in Raceline::Project.
+    const float tangent_east = -std::sin(sample.heading_from_north_rad);
+    const float tangent_north = std::cos(sample.heading_from_north_rad);
+    const float d_east = point.east_m - sample.east_m;
+    const float d_north = point.north_m - sample.north_m;
+    const float along = d_east * tangent_east + d_north * tangent_north;
+    const float lateral = d_east * (-tangent_north) + d_north * tangent_east;
+    // A nearest sample at either end with a large along-track offset means the
+    // point lies outside the window rather than beside it.
+    if (std::abs(along) > kStepM) {
+      continue;
+    }
+    const float ahead = static_cast<float>(nearest) * kStepM + along;
+    if (!(ahead > 0.0F && ahead <= lookahead_m) ||
+      lateral <= sample.e_min_m + wall_margin_m || lateral >= sample.e_max_m - wall_margin_m)
+    {
+      continue;
+    }
+    gap = gap ? std::min(*gap, ahead) : ahead;
+  }
+  return gap;
+}
 
 Control SlewLimitControl(
   const Control & target, const Control & previous, const float elapsed_s,
@@ -127,8 +196,27 @@ PlannedTrajectory MppiController::PlanLatest(
     cartesian ? observation.north_m : projection.relative_course_rad,
     cartesian ? observation.yaw_enu_rad : projection.s_m}};
   const Control previous_control = PreviousControl(observation);
-  const auto reference = raceline_.Sample(
-    projection.s_m, config_.mppi.horizon, config_.mppi.dt_s);
+  SpeedLimit speed_limit;
+  std::optional<float> lead_gap;
+  if (observation.no_overtake) {
+    const auto & mode = config_.no_overtake;
+    speed_limit.scale = mode.speed_scale;
+    speed_limit.deceleration_mps2 = mode.deceleration_mps2;
+    lead_gap = FindLeadGap(
+      raceline_, projection.s_m, obstacle_points_, mode.lookahead_m, mode.wall_margin_m);
+    if (lead_gap) {
+      speed_limit.stop_s_m = projection.s_m + *lead_gap - mode.gap_minimum_m;
+    }
+  }
+  optimizer_.SetVelocityOverspeedMultiplier(
+    observation.no_overtake ? config_.no_overtake.overspeed_multiplier :
+    config_.costs.velocity_overspeed_multiplier);
+  auto reference = raceline_.Sample(
+    projection.s_m, config_.mppi.horizon, config_.mppi.dt_s, speed_limit);
+  if (lead_gap) {
+    reference.pass_limit_s_m =
+      projection.s_m + *lead_gap - config_.no_overtake.pass_limit_gap_m;
+  }
   auto solution = optimizer_.Solve(
     initial, reference, previous_control, projection.s_m, shift_fraction, reset,
     num_visualization_rollouts, capture_cost_terms);
@@ -152,6 +240,10 @@ PlannedTrajectory MppiController::PlanLatest(
     result.body_states.push_back(body);
   }
   result.capture_id = solution.capture_id;
+  result.no_overtake = observation.no_overtake;
+  if (lead_gap) {
+    result.lead_gap_m = *lead_gap;
+  }
 
   previous_pose_time_ns_ = observation.pose_time_ns;
   reset_next_ = false;

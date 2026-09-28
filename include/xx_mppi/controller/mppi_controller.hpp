@@ -31,6 +31,8 @@ struct VehicleObservation {
   float measured_steering_rad{};
   float driven_wheel_speed_mps{};
   std::uint32_t status{};
+  // Operator no-overtake request: RC trigger high while in AUTO.
+  bool no_overtake{false};
 };
 
 struct CartesianTrajectoryState {
@@ -54,6 +56,10 @@ struct PlannedTrajectory {
   FrameKind frame{FrameKind::kFrenet};
   // Nonzero when PlanLatest staged the requested capture (see CollectCapture).
   std::uint64_t capture_id{};
+  // Whether the no-overtake speed limit shaped this plan, and the lead gap it
+  // used (NaN when nothing was ahead on the racing surface).
+  bool no_overtake{false};
+  float lead_gap_m{std::numeric_limits<float>::quiet_NaN()};
 };
 
 // The sideslip both the Frenet projection and the body model use.
@@ -77,6 +83,14 @@ struct PlannedTrajectory {
 [[nodiscard]] Control SlewLimitControl(
   const Control & target, const Control & previous, float elapsed_s,
   const std::array<float, kControlDim> & limit) noexcept;
+
+// Along-track distance from unwrapped s0_m to the nearest point that lies on
+// the racing surface, at least wall_margin_m inside both track bounds, within
+// lookahead_m ahead. Walls sit on the bounds and are ignored, so what remains
+// is a car or some other object on the track. nullopt when there is none.
+[[nodiscard]] std::optional<float> FindLeadGap(
+  const Raceline & raceline, float s0_m, const std::vector<Point2D> & points,
+  float lookahead_m, float wall_margin_m);
 
 class MppiController {
  public:
@@ -127,6 +141,8 @@ class MppiController {
   CudaMppiController optimizer_;
   std::optional<PreparedObservation> latest_;
   std::optional<std::int64_t> previous_pose_time_ns_;
+  // Confirmed returns of the applied obstacle field, for the no-overtake lead gap.
+  std::vector<Point2D> obstacle_points_;
   Control last_applied_control_{};
   bool reset_next_{true};
 };

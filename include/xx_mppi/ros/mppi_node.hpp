@@ -44,6 +44,7 @@ class MppiNode : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
   std::optional<std::int64_t> previous_pose_time_ns_;
   std::optional<std::uint8_t> previous_reset_counter_;
+  bool no_overtake_{false};
   std::string base_frame_;
   std::string laser_frame_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

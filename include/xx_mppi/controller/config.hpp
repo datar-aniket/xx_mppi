@@ -9,6 +9,34 @@
 
 namespace xxcar::mppi {
 
+// Operator no-overtake mode (RC trigger high while in AUTO). Two parts:
+//  - a hard wall pass_limit_gap_m behind the nearest return on the racing
+//    surface ahead. Any rollout state past it latches the crash cost, the same
+//    as leaving the track, so no admissible plan passes the lead car. The lead
+//    is treated as stationary over the horizon: conservative, never optimistic.
+//  - the raceline speed is scaled and capped so the reference stops
+//    gap_minimum_m short of that return, which sets the following distance:
+//    gap = gap_minimum_m + v^2 / (2 deceleration_mps2).
+struct NoOvertakeConfig {
+  float speed_scale{0.7F};
+  // Along-track distance from the vehicle centre (base_link) to the lead
+  // car's nearest return at which the reference speed reaches zero. Includes
+  // this car's front overhang.
+  float gap_minimum_m{0.8F};
+  // Hard wall distance from base_link to the lead car's nearest return. At
+  // least this car's front overhang; keep it below gap_minimum_m.
+  float pass_limit_gap_m{0.3F};
+  float deceleration_mps2{3.0F};
+  // The wall exists only for a car detected this far ahead, so it must exceed
+  // the stopping distance from the fastest no-overtake speed.
+  float lookahead_m{8.0F};
+  // Returns closer than this to either track bound are walls, not cars.
+  float wall_margin_m{0.15F};
+  // Replaces velocity_profile.over_weight while the mode is on, so exceeding
+  // the lowered reference is not nearly free.
+  float overspeed_multiplier{1.0F};
+};
+
 struct ControllerConfig {
   MppiConfig mppi{};
   CostWeights costs{};
@@ -38,6 +66,7 @@ struct ControllerConfig {
   // solve_rate_hz.
   float cost_terms_rate_hz{10.0F};
   std::uint32_t num_rollouts{15U};
+  NoOvertakeConfig no_overtake{};
 };
 
 ControllerConfig LoadControllerConfig(const std::string & config_directory);

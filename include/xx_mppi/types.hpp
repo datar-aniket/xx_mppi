@@ -196,6 +196,11 @@ struct ObstacleConfig {
   std::uint16_t footprint_circles{3U};
 };
 
+struct Point2D {
+  float east_m{};
+  float north_m{};
+};
+
 struct ObstacleField {
   std::int64_t stamp_ns{};
   std::uint64_t generation{};
@@ -205,6 +210,9 @@ struct ObstacleField {
   std::uint32_t width{};
   std::uint32_t height{};
   std::vector<float> signed_distance_m;
+  // The confirmed world-space returns the field was built from. The no-overtake
+  // follow cap looks for a car ahead among them.
+  std::vector<Point2D> points;
 
   [[nodiscard]] bool valid() const noexcept {
     return resolution_m > 0.0F && width > 1U && height > 1U &&
@@ -244,6 +252,10 @@ struct ReferenceHorizon {
   std::vector<float> speed_profile;   // T + 1
   std::vector<float> e_min;           // T + 1
   std::vector<float> e_max;           // T + 1
+  // Unwrapped arc length the vehicle centre must not pass: the no-overtake
+  // wall behind a lead car. A state beyond it latches the crash cost exactly
+  // like a track-bound violation, so no admissible plan goes past that car.
+  float pass_limit_s_m{std::numeric_limits<float>::infinity()};
 };
 
 // Per-term decomposition of the scalar cost the solver minimizes. The entries
