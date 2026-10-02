@@ -40,5 +40,6 @@ bool CudaMppiController::using_cuda() const noexcept { return false; }
 void CudaMppiController::UpdateObstacleField(const ObstacleField &) {}
 void CudaMppiController::ClearObstacleField() {}
 void CudaMppiController::SetVelocityOverspeedMultiplier(float) noexcept {}
+void CudaMppiController::SetVehicleParameters(const VehicleParameters &) noexcept {}
 
 }  // namespace xxcar::mppi

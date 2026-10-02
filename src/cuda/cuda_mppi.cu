@@ -1930,6 +1930,11 @@ class CudaMppiController::Impl {
     costs_.velocity_overspeed_multiplier = multiplier;
   }
 
+  void SetVehicleParameters(const VehicleParameters & vehicle) noexcept {
+    // Passed to the kernels by value at launch, like costs_.
+    vehicle_ = vehicle;
+  }
+
   const MppiConfig & config() const noexcept { return config_; }
 
  private:
@@ -2161,6 +2166,10 @@ void CudaMppiController::ClearObstacleField() { impl_->ClearObstacleField(); }
 
 void CudaMppiController::SetVelocityOverspeedMultiplier(const float multiplier) noexcept {
   impl_->SetVelocityOverspeedMultiplier(multiplier);
+}
+
+void CudaMppiController::SetVehicleParameters(const VehicleParameters & vehicle) noexcept {
+  impl_->SetVehicleParameters(vehicle);
 }
 
 }  // namespace xxcar::mppi

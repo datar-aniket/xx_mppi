@@ -57,9 +57,11 @@ class MuEstimator {
     float measured_ax_mps2, float measured_ay_mps2);
 
   [[nodiscard]] float nominal_mu() const noexcept { return nominal_mu_; }
+  // The nominal parameters with both friction coefficients scaled to a
+  // load-weighted mu, keeping their front/rear ratio.
+  [[nodiscard]] VehicleParameters WithMu(float mu) const noexcept;
 
  private:
-  [[nodiscard]] VehicleParameters WithMu(float mu) const noexcept;
   [[nodiscard]] float Estimate() const noexcept;
 
   VehicleParameters nominal_;

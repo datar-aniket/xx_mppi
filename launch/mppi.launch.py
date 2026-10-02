@@ -57,6 +57,9 @@ def _launch_node(context):
         "publish_grip_status": LaunchConfiguration("publish_grip_status"),
         "grip_status_rate_hz": LaunchConfiguration("grip_status_rate_hz"),
         "estimate_mu": LaunchConfiguration("estimate_mu"),
+        "apply_mu_estimate": LaunchConfiguration("apply_mu_estimate"),
+        "mu_estimate_apply_min": LaunchConfiguration("mu_estimate_apply_min"),
+        "mu_estimate_apply_max": LaunchConfiguration("mu_estimate_apply_max"),
     }
 
     # Empty launch arguments leave these values to config/mppi.yaml. A supplied
@@ -172,9 +175,17 @@ def generate_launch_description():
             "estimate_mu",
             default_value="true",
             description="Fit the tire-road friction coefficient online and publish "
-                        "it (std_msgs/Float32) on xx_mppi/mu_estimate. Publish only; "
-                        "the solver keeps using vehicle.yaml.",
+                        "it (std_msgs/Float32) on xx_mppi/mu_estimate.",
         ),
+        DeclareLaunchArgument(
+            "apply_mu_estimate",
+            default_value="false",
+            description="Plan with the online mu estimate, clamped to "
+                        "[mu_estimate_apply_min, mu_estimate_apply_max], instead of "
+                        "the vehicle.yaml mu. Needs estimate_mu.",
+        ),
+        DeclareLaunchArgument("mu_estimate_apply_min", default_value="0.3"),
+        DeclareLaunchArgument("mu_estimate_apply_max", default_value="0.6"),
     ]
     return LaunchDescription(
         arguments + [

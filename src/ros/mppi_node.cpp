@@ -122,6 +122,9 @@ MppiNode::MppiNode(const rclcpp::NodeOptions & options)
     "mu_estimate_longitudinal_weight", estimator.longitudinal_weight);
   estimator.time_constant_s = declare_float(
     "mu_estimate_time_constant_s", estimator.time_constant_s);
+  mu_estimate.apply = declare_parameter<bool>("apply_mu_estimate", mu_estimate.apply);
+  mu_estimate.apply_mu_min = declare_float("mu_estimate_apply_min", mu_estimate.apply_mu_min);
+  mu_estimate.apply_mu_max = declare_float("mu_estimate_apply_max", mu_estimate.apply_mu_max);
 
   if (config_directory.empty() || state_topic.empty() ||
     (!direct_control.enabled && trajectory_topic.empty()))

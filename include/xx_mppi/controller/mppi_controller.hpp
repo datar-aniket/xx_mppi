@@ -121,6 +121,11 @@ class MppiController {
   }
   void UpdateObstacleField(const ObstacleField & field);
   void ClearObstacleField();
+  // Replaces the vehicle parameters the solver plans with, from the next plan.
+  // config().vehicle keeps the vehicle.yaml values. Call from the planning thread.
+  void SetVehicleParameters(const VehicleParameters & vehicle) noexcept {
+    optimizer_.SetVehicleParameters(vehicle);
+  }
   void Reset() noexcept;
 
   [[nodiscard]] const ControllerConfig & config() const noexcept { return config_; }

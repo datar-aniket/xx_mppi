@@ -51,6 +51,9 @@ class CudaMppiController {
   void ClearObstacleField();
   // Takes effect from the next Solve. Call from the solver thread.
   void SetVelocityOverspeedMultiplier(float multiplier) noexcept;
+  // Physical parameters the rollouts use from the next Solve (the online
+  // friction estimate). Call from the solver thread.
+  void SetVehicleParameters(const VehicleParameters & vehicle) noexcept;
 
   [[nodiscard]] const MppiConfig & config() const noexcept;
   [[nodiscard]] bool using_cuda() const noexcept;

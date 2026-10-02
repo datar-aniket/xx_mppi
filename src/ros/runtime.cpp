@@ -184,12 +184,30 @@ MppiRosRuntime::MppiRosRuntime(
       controller_->config().vehicle, mu_estimate_.estimator);
     mu_estimate_publisher_ = node_.create_publisher<std_msgs::msg::Float32>(
       mu_estimate_.topic, rclcpp::QoS(1).best_effort());
+    if (mu_estimate_.apply &&
+      !(mu_estimate_.apply_mu_min > 0.0F && mu_estimate_.apply_mu_max >= mu_estimate_.apply_mu_min &&
+      std::isfinite(mu_estimate_.apply_mu_max)))
+    {
+      throw std::invalid_argument("applied mu bounds need 0 < mu_estimate_apply_min <= "
+                                  "mu_estimate_apply_max");
+    }
     mu_thread_ = std::thread([this]() {MuWorker();});
     RCLCPP_INFO(
       node_.get_logger(), "Online mu estimate on '%s' at %.3f Hz (vehicle.yaml mu %.3f)",
       mu_estimate_.topic.c_str(), mu_estimate_.rate_hz,
       static_cast<double>(mu_estimator_->nominal_mu()));
+    if (mu_estimate_.apply) {
+      RCLCPP_INFO(
+        node_.get_logger(), "Solver plans with the mu estimate clamped to [%.3f, %.3f]%s",
+        static_cast<double>(mu_estimate_.apply_mu_min),
+        static_cast<double>(mu_estimate_.apply_mu_max),
+        ModelHasTireForces(controller_->config().model_kind) ? "" :
+        " (this model has no tire forces; it has no effect)");
+    }
   } else {
+    if (mu_estimate_.apply) {
+      throw std::invalid_argument("apply_mu_estimate needs estimate_mu");
+    }
     RCLCPP_INFO(node_.get_logger(), "Online mu estimate disabled");
   }
   visualization_thread_ = std::thread([this]() {VisualizationWorker();});
@@ -547,6 +565,13 @@ void MppiRosRuntime::SolveOnce(
       controller_->RecordPublishedControl(*published_control);
     }
     (void)controller_->UpdateObservation(observation);
+    {
+      std::lock_guard<std::mutex> lock(applied_vehicle_mutex_);
+      if (applied_vehicle_ && applied_vehicle_generation_ != solver_vehicle_generation_) {
+        controller_->SetVehicleParameters(*applied_vehicle_);
+        solver_vehicle_generation_ = applied_vehicle_generation_;
+      }
+    }
     const auto field = std::atomic_load_explicit(
       &pending_obstacle_field_, std::memory_order_acquire);
     if (field && field->generation != applied_obstacle_generation_) {
@@ -766,9 +791,17 @@ void MppiRosRuntime::PublishGripStatus() {
     return;
   }
   grip_last_pose_time_ns_ = observation->pose_time_ns;
+  // The friction limit the solver currently plans with.
+  VehicleParameters vehicle = controller_->config().vehicle;
+  {
+    std::lock_guard<std::mutex> lock(applied_vehicle_mutex_);
+    if (applied_vehicle_) {
+      vehicle = *applied_vehicle_;
+    }
+  }
   try {
     grip_status_publisher_->publish(ToGripStatusMessage(
-        *observation, *solution, controller_->config().vehicle,
+        *observation, *solution, vehicle,
         controller_->config().model_kind, grip_monitor_));
   } catch (const std::exception & error) {
     RCLCPP_ERROR_THROTTLE(
@@ -826,6 +859,21 @@ void MppiRosRuntime::PublishMuEstimate() {
   const auto estimate = mu_estimator_->Update(
     static_cast<double>(observation->pose_time_ns) * 1.0e-9, state, control,
     observation->longitudinal_acceleration_mps2, observation->lateral_acceleration_mps2);
+  if (mu_estimate_.apply && estimate.has_estimate) {
+    const float mu = std::clamp(
+      estimate.mu, mu_estimate_.apply_mu_min, mu_estimate_.apply_mu_max);
+    if (mu != mu_applied_) {
+      if (std::isnan(mu_applied_)) {
+        RCLCPP_INFO(
+          node_.get_logger(), "Solver switches from vehicle.yaml mu %.3f to %.3f",
+          static_cast<double>(mu_estimator_->nominal_mu()), static_cast<double>(mu));
+      }
+      mu_applied_ = mu;
+      std::lock_guard<std::mutex> lock(applied_vehicle_mutex_);
+      applied_vehicle_ = mu_estimator_->WithMu(mu);
+      ++applied_vehicle_generation_;
+    }
+  }
   try {
     std_msgs::msg::Float32 message;
     message.data = estimate.mu;

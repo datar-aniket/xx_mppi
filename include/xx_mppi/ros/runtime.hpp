@@ -3,6 +3,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -33,6 +34,12 @@ struct MuEstimateConfig {
   std::string topic{"xx_mppi/mu_estimate"};
   double rate_hz{50.0};
   MuEstimatorConfig estimator{};
+  // Plan with the estimate, clamped to [apply_mu_min, apply_mu_max], instead
+  // of the vehicle.yaml mu. The solver keeps vehicle.yaml until the first
+  // informative sample.
+  bool apply{false};
+  float apply_mu_min{0.3F};
+  float apply_mu_max{0.6F};
 };
 
 // Reusable ROS runtime beneath the final custom vehicle-state subscriber. The
@@ -119,6 +126,14 @@ class MppiRosRuntime {
   // reset does not change the floor.
   std::unique_ptr<MuEstimator> mu_estimator_;
   std::int64_t mu_last_pose_time_ns_{};
+  float mu_applied_{std::numeric_limits<float>::quiet_NaN()};
+  // Vehicle parameters at the applied mu, handed from the mu thread to the
+  // solver (and the grip status) under applied_vehicle_mutex_.
+  std::mutex applied_vehicle_mutex_;
+  std::optional<VehicleParameters> applied_vehicle_;
+  std::uint64_t applied_vehicle_generation_{};
+  // Touched only by the solver thread.
+  std::uint64_t solver_vehicle_generation_{};
   std::chrono::nanoseconds solve_period_{};
   std::chrono::nanoseconds control_publication_period_{};
   std::chrono::nanoseconds info_log_period_{};
